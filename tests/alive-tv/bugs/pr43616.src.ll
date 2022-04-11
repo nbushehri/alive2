@@ -23,3 +23,5 @@ define void @ctor1() {
   [ { i32, void ()*, i8* } { i32 65535, void ()* @ctor1, i8* null } ]
 
 ; ERROR: Unsupported interprocedural transformation: global variable @object1 is const in target but not in source
+; XFAIL: call with escaped locals
+; SKIP-IDENTITY

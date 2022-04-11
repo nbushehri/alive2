@@ -20,7 +20,7 @@ static void z3_error_handler(Z3_context ctx, Z3_error_code err) {
     return;
 
   dbg() << "Severe Z3 error: " << str << " [code=" << err << "]\n";
-  _Exit(-1);
+  abort();
 }
 
 namespace smt {

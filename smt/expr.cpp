@@ -434,11 +434,12 @@ bool expr::isUInt(uint64_t &n) const {
 bool expr::isInt(int64_t &n) const {
   C();
   auto bw = bits();
-  if (bw > 64 || !Z3_get_numeral_int64(ctx(), ast(), &n))
+  uint64_t u;
+  // We can't use Z3_get_numeral_int64 as it treats bitvectors as unsigned.
+  if (bw > 64 || !isUInt(u))
     return false;
 
-  if (bw < 64)
-    n = (int64_t)((uint64_t)n << (64 - bw)) >> (64 - bw);
+  n = (int64_t)(u << (64 - bw)) >> (64 - bw);
   return true;
 }
 
@@ -530,6 +531,13 @@ bool expr::isStore(expr &array, expr &idx, expr &val) const {
 
 bool expr::isLoad(expr &array, expr &idx) const {
   return isBinOp(array, idx, Z3_OP_SELECT);
+}
+
+bool expr::isFuncAsArray(expr &val) const {
+  if (!Z3_is_as_array(ctx(), ast()))
+    return false;
+  val = Z3_func_decl_to_ast(ctx(), Z3_get_as_array_func_decl(ctx(), ast()));
+  return true;
 }
 
 bool expr::isFPAdd(expr &rounding, expr &lhs, expr &rhs) const {

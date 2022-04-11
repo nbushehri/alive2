@@ -349,7 +349,11 @@ public:
         if (i.getArgOperand(argidx)->getType()->isAggregateType())
           // TODO: noundef aggregate should be supported; it can have undef
           // padding
+#if LLVM_VERSION_MAJOR >= 14
           return errorAttr(i.getAttributeAtIndex(argidx, llvm::Attribute::NoUndef));
+#else
+          return errorAttr(i.getAttribute(argidx, llvm::Attribute::NoUndef));
+#endif
       }
 
       if (i.paramHasAttr(argidx, llvm::Attribute::Returned)) {
@@ -1195,6 +1199,7 @@ public:
       }
 
       case LLVMContext::MD_tbaa:
+      case LLVMContext::MD_tbaa_struct:
         // skip this for now
         break;
 
@@ -1242,7 +1247,7 @@ public:
         attrs.blockSize = max(attrs.blockSize, asz.getKnownMinSize());
 
         attrs.set(ParamAttrs::Align);
-        attrs.align = max(attrs.align, DL().getABITypeAlignment(ty));
+        attrs.align = max(attrs.align, static_cast<uint64_t>(DL().getABITypeAlignment(ty)));
         continue;
       }
 

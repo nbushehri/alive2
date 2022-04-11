@@ -10,3 +10,6 @@ define void @tgt() {
 }
 
 declare i32 @g(i32*)
+
+; SKIP-IDENTITY
+; XFAIL: Source is more defined

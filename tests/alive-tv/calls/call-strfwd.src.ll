@@ -10,3 +10,6 @@ define i8 @f(i8* %p) {
 declare i8 @g(i8*)
 declare i8* @malloc(i64)
 declare void @llvm.memcpy.p0i8.p0i8.i64(i8*, i8*, i64, i1)
+
+; SKIP-IDENTITY
+; XFAIL: call with escaped locals

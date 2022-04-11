@@ -107,12 +107,10 @@ void tools::print_model_val(ostream &os, const State &st, const Model &m,
   os << (type.isStructType() ? " }" : " >");
 }
 
-
 using print_var_val_ty = function<void(ostream&, const Model&)>;
 
-static bool error(Errors &errs, const State &src_state, const State &tgt_state,
-                  const Result &r, const Value *var, const char *msg,
-                  bool check_each_var, print_var_val_ty print_var_val) {
+bool Errors::addSolverError(const Result &r) {
+  Errors &errs = *this;
 
   if (r.isInvalid()) {
     errs.add("Invalid expr", false);
@@ -134,9 +132,17 @@ static bool error(Errors &errs, const State &src_state, const State &tgt_state,
     return true;
   }
 
+  UNREACHABLE();
+}
+
+static bool error(Errors &errs, const State &src_state, const State &tgt_state,
+                  const Result &r, const Value *var,
+                  const char *msg, bool check_each_var,
+                  print_var_val_ty print_var_val) {
+  if (!r.isSat())
+    return errs.addSolverError(r);
+
   stringstream s;
-  string empty;
-  auto &var_name = var ? var->getName() : empty;
   auto &m = r.getModel();
 
   {
@@ -152,17 +158,26 @@ static bool error(Errors &errs, const State &src_state, const State &tgt_state,
     }
 
     if (!approx.empty()) {
-      s << "Couldn't prove the correctness of the transformation\n"
-          "Alive2 approximated the semantics of the programs and therefore we\n"
-          "cannot conclude whether the bug found is valid or not.\n\n"
-          "Approximations done:\n";
       for (auto &msg : approx) {
         s << " - " << msg << '\n';
       }
-      errs.add(s.str(), false);
-      return false;
+      return errs.addSolverSatApprox(s.str());
     }
   }
+
+  print_var_val(s, m);
+  return errs.addSolverSat(src_state, tgt_state, r, var, msg, check_each_var,
+                           s.str());
+}
+
+bool Errors::addSolverSat(const IR::State &src_state,
+                          const IR::State &tgt_state, const smt::Result &r,
+                          const IR::Value *var, const std::string &msg,
+                          bool check_each_var, const std::string &post_msg) {
+  stringstream s;
+  string empty;
+  auto &var_name = var ? var->getName() : empty;
+  auto &m = r.getModel();
 
   s << msg;
   if (!var_name.empty())
@@ -237,8 +252,8 @@ static bool error(Errors &errs, const State &src_state, const State &tgt_state,
     st->getMemory().print(s, m);
   }
 
-  print_var_val(s, m);
-  errs.add(s.str(), true);
+  s << post_msg;
+  add(s.str(), true);
   return false;
 }
 
@@ -1041,7 +1056,14 @@ static void calculateAndInitConstants(Transform &t) {
   bits_ptr_address = min(max(bits_size_t, bits_ptr_address + has_local_bit),
                          bits_program_pointer);
 
-  bits_byte = 8 * (does_mem_access ?  (unsigned)min_access_size : 1);
+  if (false) {
+    // FIXME: make the interpreter support bits_byte > 8, so we can go back to
+    // this original, more efficient code. The tricky part is handling default
+    // values for memory blocks, which could consist of multiple bytes.
+    bits_byte = 8 * (does_mem_access ?  (unsigned)min_access_size : 1);
+  } else {
+    bits_byte = 8;
+  }
 
   bits_poison_per_byte = 1;
   if (min_vect_elem_sz > 0)
@@ -1119,7 +1141,7 @@ pair<unique_ptr<State>, unique_ptr<State>> TransformVerify::exec() const {
   return { std::move(src_state), std::move(tgt_state) };
 }
 
-Errors TransformVerify::verify() const {
+void TransformVerify::verify(Errors &errs) const {
   {
     auto src_inputs = t.src.getInputs();
     auto tgt_inputs = t.tgt.getInputs();
@@ -1129,18 +1151,25 @@ Errors TransformVerify::verify() const {
     while (litr != lend && ritr != rend) {
       auto *lv = dynamic_cast<const Input*>(&*litr);
       auto *rv = dynamic_cast<const Input*>(&*ritr);
-      if (lv->getType().toString() != rv->getType().toString())
-        return { "Signature mismatch between src and tgt", false };
+      if (lv->getType().toString() != rv->getType().toString()) {
+        errs.add("Signature mismatch between src and tgt", false);
+        return;
+      }
 
-      if (!lv->getAttributes().refinedBy(rv->getAttributes()))
-        return { "Parameter attributes not refined", true };
-
+      if (!lv->getAttributes().refinedBy(rv->getAttributes())) {
+        errs.add("Parameter attributes not refined", true);
+        return;
+      }
+      
       ++litr;
       ++ritr;
     }
 
-    if (litr != lend || ritr != rend)
-      return { "Signature mismatch between src and tgt", false };
+    if (litr != lend || ritr != rend) {
+      errs.add("Signature mismatch between src and tgt", false);
+      return;
+    }
+
   }
 
   // Check sizes of global variables
@@ -1159,17 +1188,20 @@ Errors TransformVerify::verify() const {
          << GVS->getName() << " has different size in source and target ("
          << GVS->size() << " vs " << GVT->size()
          << " bytes)";
-      return { ss.str(), false };
+      errs.add(ss.str(), false);
+      return;
     } else if (GVS->isConst() && !GVT->isConst()) {
       stringstream ss;
       ss << "Transformation is incorrect because global variable "
          << GVS->getName() << " is const in source but not in target";
-      return { ss.str(), true };
+      errs.add(ss.str(), true);
+      return;
     } else if (!GVS->isConst() && GVT->isConst()) {
       stringstream ss;
       ss << "Unsupported interprocedural transformation: global variable "
          << GVS->getName() << " is const in target but not in source";
-      return { ss.str(), false };
+      errs.add(ss.str(), false);
+      return;
     }
   }
   for (auto GVT : globals_tgt) {
@@ -1182,11 +1214,12 @@ Errors TransformVerify::verify() const {
         string s = "Unsupported interprocedural transformation: non-constant "
                    "global variable " + GVT->getName() + " is introduced in"
                    " target";
-        return { std::move(s), false };
+
+        errs.add(move(s), false);
+        return;
     }
   }
 
-  Errors errs;
   try {
     auto [src_state, tgt_state] = exec();
 
@@ -1201,7 +1234,7 @@ Errors TransformVerify::verify() const {
                          val.domain, val, val_tgt.domain, val_tgt,
                          check_each_var);
         if (errs)
-          return errs;
+          return;
       }
     }
 
@@ -1210,9 +1243,8 @@ Errors TransformVerify::verify() const {
                      tgt_state->functionDomain()(), tgt_state->returnVal(),
                      check_each_var);
   } catch (AliveException e) {
-    return std::move(e);
+    errs.add(move(e));
   }
-  return errs;
 }
 
 

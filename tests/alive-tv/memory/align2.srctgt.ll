@@ -13,3 +13,5 @@ define i32 @tgt(i32* align(4) %p) {
 }
 
 declare void @g(i32*)
+; XFAIL: call with escaped locals
+; SKIP-IDENTITY

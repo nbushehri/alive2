@@ -1,0 +1,36 @@
+---
+name: nocapture
+func: alive.tv_v2
+args:
+  - disable_undef_input: true
+    disable_poison_input: true
+  - !ir |
+    @x = global i8* null
+
+    define void @src(i8* nocapture %p) {
+      %poison = getelementptr inbounds i8, i8* null, i32 1
+      store i8* %poison, i8** @x
+      ret void
+    }
+  - !ir |
+    @x = global i8* null
+
+    define void @tgt(i8* nocapture %p) {
+      store i8* %p, i8** @x
+      ret void
+    }
+expected:
+  test_input:
+    args: [[0, 0]]
+    memory:
+      - size: 0
+        align: 0
+      - size: 8
+        align: 3
+        bytes:
+          - [null,0,[0,0,0]]
+      - size: 0
+        align: 32
+  status: unsound
+  valid: false
+  errs: "ERROR: Source is more defined than target\n"

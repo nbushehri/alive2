@@ -7,6 +7,7 @@ from .base import TestFormat
 import os, re, signal, string, subprocess
 
 ok_string = 'Transformation seems to be correct!'
+ok_interp = 'functions interpreted successfully'
 
 def executeCommand(command):
   p = subprocess.Popen(command,
@@ -65,7 +66,10 @@ class Alive2Test(TestFormat):
           (filename.endswith('.opt') or filename.endswith('.src.ll') or
            filename.endswith('.srctgt.ll') or filename.endswith('.c') or
            filename.endswith('.cpp') or filename.endswith('.opt.ll') or
-           filename.endswith('.ident.ll')):
+           filename.endswith('.ident.ll') or
+           filename.endswith('.exec.ll') or 
+           (filename.endswith('.ll') and not filename.endswith('.tgt.ll')) or
+           filename.endswith('.yml')):
         yield lit.Test.Test(testSuite, path_in_suite + (filename,), localConfig)
 
 
@@ -95,8 +99,30 @@ class Alive2Test(TestFormat):
       if not os.path.isfile(execpath):
         return lit.Test.UNSUPPORTED, ''
 
+    alive_exec = test.endswith('exec.ll')
+    if alive_exec:
+      cmd = ['./alive-interp']
+      if not os.path.isfile('alive-interp'):
+        return lit.Test.UNSUPPORTED, ''
+    
+    # TODO hacky way of using interpreter with .ll files
+    llvm_exec = test.endswith('.ll')
+    if llvm_exec and not alive_tv_1 and not alive_tv_2 and \
+       not alive_tv_3:
+      cmd = ['./alive-interp']
+      if not os.path.isfile('alive-interp'):
+        return lit.Test.UNSUPPORTED, ''
+
+    worker_exec = test.endswith('.yml')
+    if worker_exec:
+      cmd = ['./alive-worker-test']
+      if not os.path.isfile('alive-worker-test'):
+        return lit.Test.UNSUPPORTED, ''
+
     if not alive_tv_1 and not alive_tv_2 and not alive_tv_3 and \
-       not clang_tv and not opt_tv:
+       not clang_tv and not opt_tv and not alive_exec and not llvm_exec \
+       and not worker_exec:
+       #not clang_tv and not opt_tv and not alive_exec and not llvm_exec:
       cmd = ['./alive', '-smt-to:20000']
 
     input = readFile(test)
@@ -149,17 +175,20 @@ class Alive2Test(TestFormat):
     if chk_not != None and output.find(chk_not.group(1).strip()) != -1:
       return lit.Test.FAIL, output
 
-    if clang_tv and exitCode != 0:
+    if (clang_tv or worker_exec) and exitCode != 0:
       # clang tv should not exit with non-zero even if validation fails.
       # Otherwise it will stop a build system such as `make`.
       return lit.Test.FAIL, output
 
     expect_err = self.regex_errs.search(input)
     if expect_err is None and xfail is None and len(chks) == 0 and \
-       chk_not is None:
+       chk_not is None and not worker_exec:
       # If there's no other test, correctness of the transformation should be
       # checked.
       if exitCode == 0 and output.find(ok_string) != -1 and \
+          self.regex_errs_out.search(output) is None:
+        return lit.Test.PASS, ''
+      if exitCode == 0 and output.find(ok_interp) != -1 and \
           self.regex_errs_out.search(output) is None:
         return lit.Test.PASS, ''
       return lit.Test.FAIL, output

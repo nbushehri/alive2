@@ -92,6 +92,8 @@ struct FastMathFlags final {
   unsigned flags = None;
 
   bool isNone() const { return flags == None; }
+  bool isNNan() const { return flags & NNaN; }
+  bool isNInf() const {return flags & NInf;}
   friend std::ostream& operator<<(std::ostream &os, const FastMathFlags &fm);
 };
 

@@ -156,6 +156,33 @@ static optional<MultiTactic> tactic;
 
 namespace smt {
 
+FnModel::FnModel(Z3_func_interp interp) : interp(interp) {
+  Z3_func_interp_inc_ref(ctx(), interp);
+}
+
+FnModel::~FnModel() {
+  if (interp)
+    Z3_func_interp_dec_ref(ctx(), interp);
+}
+
+unsigned FnModel::getNumEntries() const {
+  return Z3_func_interp_get_num_entries(ctx(), interp);
+}
+
+expr FnModel::getEntryValue(unsigned i) const {
+  auto entry = Z3_func_interp_get_entry(ctx(), interp, i);
+  return Z3_func_entry_get_value(ctx(), entry);
+}
+
+expr FnModel::getEntryArg(unsigned i, unsigned arg) const {
+  auto entry = Z3_func_interp_get_entry(ctx(), interp, i);
+  return Z3_func_entry_get_arg(ctx(), entry, arg);
+}
+
+expr FnModel::getElseValue() const {
+  return Z3_func_interp_get_else(ctx(), interp);
+}
+
 Model::Model(Z3_model m) : m(m) {
   Z3_model_inc_ref(ctx(), m);
 }
@@ -192,6 +219,14 @@ int64_t Model::getInt(const expr &var) const {
 bool Model::hasFnModel(const expr &fn) const {
   auto fn_decl = fn.decl();
   return fn_decl ? Z3_model_has_interp(ctx(), m, fn_decl) : false;
+}
+
+FnModel Model::getFnModel(const expr &fn) const {
+  auto fn_decl = fn.decl();
+  assert(fn_decl);
+  Z3_func_interp_opt interp = Z3_model_get_func_interp(ctx(), m, fn_decl);
+  assert(interp);
+  return FnModel(interp);
 }
 
 pair<expr, expr> Model::iterator::operator*(void) const {

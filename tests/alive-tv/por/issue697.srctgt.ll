@@ -27,3 +27,5 @@ if.end:
 }
 
 declare void @g(i8*)
+; XFAIL: call with escaped locals
+; SKIP-IDENTITY

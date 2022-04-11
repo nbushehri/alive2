@@ -1,0 +1,11 @@
+---
+name: id_void
+func: alive.interpret
+args:
+  - {}
+  - !ir 'define void @f() { ret void }'
+  - args: []
+expected:
+  status: done
+  undefined: false
+  return_value: null

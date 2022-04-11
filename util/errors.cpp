@@ -3,21 +3,21 @@
 
 #include "util/errors.h"
 
+#include <set>
+#include <sstream>
+#include <string>
+
+#include "ir/constant.h"
+#include "ir/globals.h"
+
+using namespace IR;
+using namespace smt;
 using namespace std;
+
 
 namespace util {
 
-Errors::Errors(const char *str, bool is_unsound) {
-  add(str, is_unsound);
-}
-
-Errors::Errors(string &&str, bool is_unsound) {
-  add(std::move(str), is_unsound);
-}
-
-Errors::Errors(AliveException &&e) {
-  add(std::move(e));
-}
+Errors::~Errors() {}
 
 void Errors::add(const char *str, bool is_unsound) {
   add(string(str), is_unsound);
@@ -48,4 +48,15 @@ ostream& operator<<(ostream &os, const Errors &errs) {
   return os;
 }
 
+bool Errors::addSolverSatApprox(const std::string &approx) {
+  stringstream s;
+  s << "Couldn't prove the correctness of the transformation\n"
+       "Alive2 approximated the semantics of the programs and therefore we\n"
+       "cannot conclude whether the bug found is valid or not.\n\n"
+       "Approximations done:\n";
+  s << approx;
+  add(s.str(), false);
+  return false;
 }
+
+} // namespace util

@@ -1,3 +1,6 @@
+; SKIP-IDENTITY
+; XFAIL: call with escaped locals
+
 define i8 @src(i8 *%p) argmemonly {
   %p2 = getelementptr i8, i8* %p, i32 0
   %v = call i8 @f(i8* %p2)

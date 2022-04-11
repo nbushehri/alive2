@@ -39,3 +39,5 @@ return:
 declare void @myprintf(i8*, ...)
 
 ; ERROR: Source is more defined than target
+; XFAIL: call with escaped locals
+; SKIP-IDENTITY

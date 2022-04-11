@@ -1,5 +1,3 @@
-; ERROR: Value mismatch
-
 define i1 @f() {
   %p = alloca i8, align 1
   %call = call i8* @g(i8* %p)
@@ -8,3 +6,7 @@ define i1 @f() {
 }
 
 declare i8* @g(i8*)
+
+; SKIP-IDENTITY
+; ERROR: Value mismatch
+; XFAIL: call with escaped locals

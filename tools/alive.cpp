@@ -127,7 +127,9 @@ int main(int argc, char **argv) {
         bool correct = true;
         for (; types; ++types) {
           tv.fixupTypes(types);
-          if (auto errs = tv.verify()) {
+          Errors errs;
+          tv.verify(errs);
+          if (errs) {
             cerr << errs;
             correct = false;
             break;

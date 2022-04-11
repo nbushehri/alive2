@@ -21,3 +21,5 @@ B:
   call void @f(i8* nonnull %p)
   ret void
 }
+; XFAIL: call with escaped locals
+; SKIP-IDENTITY

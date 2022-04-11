@@ -810,10 +810,27 @@ State::addFnCall(const string &name, vector<StateValue> &&inputs,
     return vector<StateValue>(out_types.size());
   }
 
-  if (writes_memory) {
-    for (auto &v : ptr_inputs) {
-      if (!v.byval && !v.nocapture && !v.val.non_poison.isFalse())
+  bool any_pointer_arg = false;
+  for (auto &v : ptr_inputs) {
+    if (!v.byval && !v.nocapture && !v.val.non_poison.isFalse()) {
+      any_pointer_arg = true;
+      if (writes_memory)
         memory.escapeLocalPtr(v.val.value);
+    }
+  }
+
+  if ((reads_memory || writes_memory) &&
+      (memory.hasEscapedLocals() || any_pointer_arg)) {
+    // Prevent Alive from incorrectly reporting transformations as sound in
+    // cases where the callee could modify our local variables. This must come
+    // after the escapeLocalPtr() calls above.
+    //
+    // TODO: actually handle this more accurately in Memory::mkCallState().
+    doesApproximation("call with escaped locals");
+    if (!isSource()) {
+      // Force the transformation to be unsound (assuming the source function
+      // doesn't always have undefined behavior).
+      addUB(expr(false));
     }
   }
 

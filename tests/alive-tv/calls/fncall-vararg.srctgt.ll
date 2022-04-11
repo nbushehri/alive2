@@ -12,3 +12,5 @@ define void @tgt() {
   tail call void (i8*, ...) @g(i8* null)
   ret void
 }
+; XFAIL: call with escaped locals
+; SKIP-IDENTITY

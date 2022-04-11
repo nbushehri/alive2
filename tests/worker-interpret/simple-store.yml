@@ -1,0 +1,129 @@
+---
+name: store_128
+func: alive.interpret
+args:
+  - {}
+  - !ir | 
+    define void @tgt(i8* dereferenceable(1) %x) {
+      store i8 0, i8* %x
+      ret void
+    }
+  - args: [[1,0]]
+    memory:
+      - size: 0
+        align: 0
+      - size: 3
+        align: 32
+        bytes:
+          - [0, 255, 128]
+          - [null, 0, 0]
+expected:
+  status: done
+  undefined: false
+  return_value: null
+  memory:
+    - size: 0
+      align: 0
+    - size: 3
+      align: 32
+      bytes:
+        - [0, 255, 0]
+        - [null, 0, 0]
+---
+name: store_before_block
+func: alive.interpret
+args:
+  - {}
+  - !ir | 
+    define void @tgt(i8* dereferenceable(1) %x) {
+      store i8 0, i8* %x
+      ret void
+    }
+  - args: [[1,-1]]
+    memory:
+      - size: 0
+        align: 0
+      - size: 3
+        align: 32
+        bytes:
+          - [null, 0, 0]
+expected:
+  status: done
+  undefined: true
+---
+name: store_after_block
+func: alive.interpret
+args:
+  - {}
+  - !ir | 
+    define void @tgt(i8* dereferenceable(1) %x) {
+      store i8 0, i8* %x
+      ret void
+    }
+  - args: [[1,3]]
+    memory:
+      - size: 0
+        align: 0
+      - size: 3
+        align: 32
+        bytes:
+          - [null, 0, 0]
+expected:
+  status: done
+  undefined: true
+---
+name: store_to_null
+func: alive.interpret
+args:
+  - {}
+  - !ir | 
+    define void @tgt(i8* dereferenceable(1) %x) {
+      store i8 0, i8* %x
+      ret void
+    }
+  - args: [[0,0]]
+    memory:
+      - size: 0
+        align: 0
+      - size: 3
+        align: 32
+        bytes:
+          - [0, 255, 128]
+          - [null, 0, 0]
+expected:
+  status: done
+  undefined: true
+---
+name: store_replacing_pointer_byte
+func: alive.interpret
+args:
+  - {}
+  - !ir |
+    define void @tgt(i8* %p) {
+      store i8 0, i8* %p
+      ret void
+    }
+  - args: [[1,131052]]
+    memory:
+      - size: 0
+        align: 1
+      - size: 262144
+        align: 32
+        bytes:
+          # It's really weird to use a pointer byte as the default,
+          # but apparently alive.tv can generate this as a counterexample.
+          - [131064,255,49]
+          - [null,0,[0,32,1]]
+expected:
+  status: done
+  undefined: false
+  return_value: null
+  memory:
+    - size: 0
+      align: 1
+    - size: 262144
+      align: 32
+      bytes:
+        - [131052,255,0]
+        - [131064,255,49]
+        - [null,0,[0,32,1]]

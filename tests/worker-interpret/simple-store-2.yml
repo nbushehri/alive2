@@ -1,0 +1,30 @@
+---
+name: store_ind_1
+func: alive.interpret
+args:
+  - {}
+  - !ir |
+    define i32 @foo(i32** %0, i32* %b) {
+      store i32 24, i32* %b, align 4
+      store i32* %b, i32** %0, align 4
+      %2 = load i32*, i32** %0, align 8
+      %3 = load i32, i32* %2, align 8
+      ret i32 %3
+    }
+  - args: [[1,0],[2,4]]
+    memory:
+      - size: 0
+        align: 0
+      - size: 40
+        align: 8
+        bytes:
+          - [0, 255, [2, 0, 0]] 
+          - [null, 0, 0]
+      - size: 40
+        align: 8
+        bytes:
+          - [null, 0, 0]
+expected:
+  status: done
+  undefined: false
+  return_value: 24

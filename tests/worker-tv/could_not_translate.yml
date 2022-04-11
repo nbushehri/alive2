@@ -1,0 +1,20 @@
+---
+name: could_not_translate
+func: alive.tv_v2
+args:
+  - {}
+  - !ir |
+    define half @f(half %x) {
+      %y = fadd half 0.0, %x
+      ret half %y
+    }
+  - !ir |
+    define half @f(half %x) {
+      %y = fadd half 0.0, %x, !fpmath !0
+      ret half %y
+    }
+
+    !0 = !{ float 2.5 }
+expected:
+  status: could_not_translate
+  valid: null

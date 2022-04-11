@@ -6,3 +6,4 @@ define void @f() {
 }
 
 declare void @fn2([3 x i8]*)
+; XFAIL: call with escaped locals

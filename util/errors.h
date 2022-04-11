@@ -8,6 +8,10 @@
 #include <string>
 #include <utility>
 
+#include "ir/state.h"
+#include "ir/value.h"
+#include "smt/solver.h"
+
 namespace util {
 
 struct AliveException {
@@ -25,13 +29,19 @@ class Errors {
 
 public:
   Errors() = default;
-  Errors(const char *str, bool is_unsound);
-  Errors(std::string &&str, bool is_unsound);
-  Errors(AliveException &&e);
+  virtual ~Errors();
 
   void add(const char *str, bool is_unsound);
   void add(std::string &&str, bool is_unsound);
   void add(AliveException &&e);
+
+  // These return true to continue validation.
+  virtual bool addSolverError(const smt::Result &r);
+  virtual bool addSolverSatApprox(const std::string &approx);
+  virtual bool addSolverSat(const IR::State &src_state,
+                            const IR::State &tgt_state, const smt::Result &r,
+                            const IR::Value *main_var, const std::string &msg,
+                            bool check_each_var, const std::string &post_msg);
 
   explicit operator bool() const { return !errs.empty(); }
   bool isUnsound() const;

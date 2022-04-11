@@ -1,0 +1,10 @@
+---
+name: type_checker_failed
+func: alive.tv_v2
+args:
+  - {}
+  - !ir "define void @f() { ret void }"
+  - !ir "define i32 @f() { ret i32 0 }"
+expected:
+  status: type_checker_failed
+  valid: false

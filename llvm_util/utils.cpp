@@ -238,7 +238,6 @@ Value* make_intconst(uint64_t val, int bits) {
     return val_cpy;                                 \
   } while (0)
 
-
 Value* get_operand(llvm::Value *v,
                    function<Value*(llvm::ConstantExpr*)> constexpr_conv,
                    function<Value*(AggregateValue*)> copy_inserter) {
@@ -424,9 +423,12 @@ PRINT(llvm::Value)
 
 void init_llvm_utils(ostream &os, const llvm::DataLayout &dataLayout) {
   out = &os;
+  type_cache.clear();
   type_id_counter = 0;
+  int_types.clear();
   int_types.resize(65);
   int_types[1] = make_unique<IntType>("i1", 1);
+  ptr_types.clear();
   ptr_types.emplace_back(make_unique<PtrType>(0));
   DL = &dataLayout;
 }

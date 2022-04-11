@@ -1,0 +1,10 @@
+name: id_array_anon
+func: alive.interpret
+args:
+  - {}
+  - !ir 'define [4 x i32] @f([4 x i32] %x) { ret [4 x i32] %x }'
+  - args: [[12, 34, 56, 78]]
+expected:
+  status: done
+  undefined: false
+  return_value: [12, 34, 56, 78]

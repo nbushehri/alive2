@@ -1,0 +1,32 @@
+---
+name: extractvalue
+func: alive.interpret
+args:
+  - {}
+  - !ir |
+    define i32 @f({i1, {i8, i16, i32}, i1} %x) {
+      %y = extractvalue {i1, {i8, i16, i32}, i1} %x, 1, 2
+      ret i32 %y
+    }
+  - args: [[0, [0, 0, 27], 0]]
+expected:
+  status: done
+  undefined: false
+  return_value: 27
+---
+name: extractvalue_padding
+func: alive.interpret
+args:
+  - {}
+  - !ir |
+    %struct = type { i32, [4 x i8] }
+
+    define i8 @src() {
+      %A = extractvalue %struct { i32 2, [4 x i8] c"foo\00" }, 1, 2
+      ret i8 %A
+    }
+  - args: []
+expected:
+  status: done
+  undefined: false
+  return_value: 111

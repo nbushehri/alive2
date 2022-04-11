@@ -1,0 +1,132 @@
+---
+name: id_i1_0
+func: alive.interpret
+args:
+  - {}
+  - !ir 'define i1 @f(i1 %x) { ret i1 %x }'
+  - args: [0]
+expected:
+  status: done
+  undefined: false
+  return_value: 0
+---
+name: id_i1_-1
+func: alive.interpret
+args:
+  - {}
+  - !ir 'define i1 @f(i1 %x) { ret i1 %x }'
+  - args: [-1]
+expected:
+  status: done
+  undefined: false
+  return_value: -1
+---
+name: id_i32_1
+func: alive.interpret
+args:
+  - {}
+  - !ir 'define i32 @f(i32 %x) { ret i32 %x }'
+  - args: [1]
+expected:
+  status: done
+  undefined: false
+  return_value: 1
+---
+name: id_i32_0
+func: alive.interpret
+args:
+  - {}
+  - !ir 'define i32 @f(i32 %x) { ret i32 %x }'
+  - args: [0]
+expected:
+  status: done
+  undefined: false
+  return_value: 0
+---
+name: id_i32_1
+func: alive.interpret
+args:
+  - {}
+  - !ir 'define i32 @f(i32 %x) { ret i32 %x }'
+  - args: [1]
+expected:
+  status: done
+  undefined: false
+  return_value: 1
+---
+name: id_i32_-1
+func: alive.interpret
+args:
+  - {}
+  - !ir 'define i32 @f(i32 %x) { ret i32 %x }'
+  - args: [0xffffffff]
+expected:
+  status: done
+  undefined: false
+  return_value: -1
+---
+name: id_i32_poison
+func: alive.interpret
+args:
+  - {}
+  - !ir 'define i32 @f(i32 %x) { ret i32 %x }'
+  - args: [poison]
+expected:
+  status: done
+  undefined: false
+  return_value: poison
+---
+name: id_i128_0
+func: alive.interpret
+args:
+  - {}
+  - !ir 'define i128 @f(i128 %x) { ret i128 %x }'
+  - args: [0]
+expected:
+  status: done
+  undefined: false
+  return_value: 0
+---
+name: id_i128_1
+func: alive.interpret
+args:
+  - {}
+  - !ir 'define i128 @f(i128 %x) { ret i128 %x }'
+  - args: [1]
+expected:
+  status: done
+  undefined: false
+  return_value: 1
+---
+name: id_i128_-1
+func: alive.interpret
+args:
+  - {}
+  - !ir 'define i128 @f(i128 %x) { ret i128 %x }'
+  - args: [-1]
+expected:
+  status: done
+  undefined: false
+  return_value: -1
+---
+name: id_i128_10000000000000000
+func: alive.interpret
+args:
+  - {}
+  - !ir 'define i128 @f(i128 %x) { ret i128 %x }'
+  - args: [!!binary AQAAAAAAAAAA]
+expected:
+  status: done
+  undefined: false
+  return_value: !!binary AQAAAAAAAAAA
+---
+name: id_i128_fffffffffffffff50000000000000000
+func: alive.interpret
+args:
+  - {}
+  - !ir 'define i128 @f(i128 %x) { ret i128 %x }'
+  - args: [!!binary //////////UAAAAAAAAAAA==]
+expected:
+  status: done
+  undefined: false
+  return_value: !!binary //////////UAAAAAAAAAAA==

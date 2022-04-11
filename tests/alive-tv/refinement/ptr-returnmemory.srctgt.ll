@@ -28,3 +28,5 @@ EXIT:
 
 declare i8* @callee2(i8*)
 declare void @free(i8*)
+; XFAIL: call with escaped locals
+; SKIP-IDENTITY

@@ -1,0 +1,32 @@
+name: alloca_int
+func: alive.interpret
+args:
+  - {}
+  - !ir |
+    define i32 @foo() {
+      %1 = alloca i32, align 8
+      store i32 5, i32* %1, align 8
+      %2 = load i32, i32* %1, align 8
+      ret i32 %2
+    }
+  - args:
+expected:
+  status: done
+  undefined: false
+  return_value: 5
+---
+name: alloca_float
+func: alive.interpret
+args:
+  - {}
+  - !ir |
+    define float @foo() {
+      %1 = alloca float, align 8
+      store float 2.0, float* %1, align 8
+      %2 = load float, float* %1, align 8
+      ret float %2
+    }
+  - args:
+expected:
+  status: unsupported
+  unsupported: store to value

@@ -146,7 +146,7 @@ Results verify(llvm::Function &F1, llvm::Function &F2,
     assert(types.hasSingleTyping());
   }
 
-  r.errs = verifier.verify();
+  verifier.verify(r.errs);
   if (r.errs) {
     r.status = r.errs.isUnsound() ? Results::UNSOUND : Results::FAILED_TO_PROVE;
   } else {

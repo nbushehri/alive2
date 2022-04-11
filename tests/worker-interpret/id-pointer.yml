@@ -1,0 +1,22 @@
+---
+name: id_pointer_null
+func: alive.interpret
+args:
+  - {}
+  - !ir 'define i8* @f(i8* %x) { ret i8* %x }'
+  - args: [[0, 0]]
+expected:
+  status: done
+  undefined: false
+  return_value: [0, 0]
+---
+name: id_pointer_nonnull
+func: alive.interpret
+args:
+  - {}
+  - !ir 'define i8* @f(i8* %x) { ret i8* %x }'
+  - args: [[1, 7]]
+expected:
+  status: done
+  undefined: false
+  return_value: [1, 7]

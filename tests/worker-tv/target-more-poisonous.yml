@@ -1,0 +1,30 @@
+---
+name: unsound_struct
+func: alive.tv_v2
+args:
+  - disable_undef_input: true
+    disable_poison_input: true
+  - !ir |
+    %s = type {i32, i1}
+    define i32 @f(%s %x) {
+      %y = extractvalue %s %x, 0
+      %z = extractvalue %s %x, 1
+      %w = zext i1 %z to i32
+      %r = add i32 %y, %w
+      ret i32 %r
+    }
+  - !ir |
+    %s = type {i32, i1}
+    define i32 @f(%s %x) {
+      %y = extractvalue %s %x, 0
+      %z = extractvalue %s %x, 1
+      %w = zext i1 %z to i32
+      %r = add nsw i32 %y, %w
+      ret i32 %r
+    }
+expected:
+  test_input:
+    args: [[0x7fffffff, -1]]
+  status: unsound
+  valid: false
+  errs: "ERROR: Target is more poisonous than source\n"

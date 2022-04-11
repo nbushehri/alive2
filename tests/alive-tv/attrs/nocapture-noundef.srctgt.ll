@@ -27,3 +27,5 @@ declare i8* @g(i8* nocapture)
 
 ; If %a = %b + n, this is wrong.
 ; ERROR: Source is more defined than target
+; XFAIL: call with escaped locals
+; SKIP-IDENTITY

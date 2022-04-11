@@ -1,0 +1,39 @@
+name: gep_array_1
+func: alive.interpret
+args:
+  - {}
+  - !ir |
+    define i8* @tgt([5 x i8] * %in) {
+      %ind = getelementptr inbounds [5 x i8], [5 x i8]* %in, i32 0, i32 5
+      ret i8* %ind
+    }
+  - args: [[1,0]]
+    memory:
+      - size: 0
+        align: 0
+      - size: 64
+        align: 1
+expected:
+  status: done
+  undefined: false
+  return_value: [1,5]
+---
+name: gep_array_2
+func: alive.interpret
+args:
+  - {}
+  - !ir |
+    define i8* @tgt([5 x i8] * %in) {
+      %ind = getelementptr inbounds [5 x i8], [5 x i8]* %in, i32 0, i32 6
+      ret i8* %ind
+    }
+  - args: [[1,0]]
+    memory:
+      - size: 0
+        align: 0
+      - size: 64
+        align: 1
+expected:
+  status: done
+  undefined: false
+  return_value: poison

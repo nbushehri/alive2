@@ -1,0 +1,66 @@
+---
+name: id_half_0
+func: alive.interpret
+args:
+  - {}
+  - !ir 'define half @f(half %x) { ret half %x }'
+  - args: [0.0]
+expected:
+  status: done
+  undefined: false
+  return_value: 0.0
+---
+name: id_half_pi
+func: alive.interpret
+args:
+  - {}
+  - !ir 'define half @f(half %x) { ret half %x }'
+  - args: [3.140625]
+expected:
+  status: done
+  undefined: false
+  return_value: 3.140625
+---
+name: id_float_0
+func: alive.interpret
+args:
+  - {}
+  - !ir 'define float @f(float %x) { ret float %x }'
+  - args: [0.0]
+expected:
+  status: done
+  undefined: false
+  return_value: 0.0
+---
+name: id_float_pi
+func: alive.interpret
+args:
+  - {}
+  - !ir 'define float @f(float %x) { ret float %x }'
+  - args: [3.1415927410125732]
+expected:
+  status: done
+  undefined: false
+  return_value: 3.1415927410125732
+---
+name: id_double_0
+func: alive.interpret
+args:
+  - {}
+  - !ir 'define double @f(double %x) { ret double %x }'
+  - args: [0.0]
+expected:
+  status: done
+  undefined: false
+  return_value: 0.0
+---
+name: id_double_pi
+func: alive.interpret
+args:
+  - {}
+  - !ir 'define double @f(double %x) { ret double %x }'
+  - args: [3.141592653589793]
+expected:
+  status: done
+  undefined: false
+  return_value: 3.141592653589793

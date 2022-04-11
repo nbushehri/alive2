@@ -11,3 +11,5 @@ define void @tgt(i8* %p) {
 }
 
 declare void @g(i8* noundef)
+; XFAIL: call with escaped locals
+; SKIP-IDENTITY

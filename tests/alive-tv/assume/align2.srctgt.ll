@@ -12,3 +12,5 @@ define void @tgt(i8* %ptr) {
   call void @llvm.assume(i1 1) [ "align"(i8* %ptr, i64 4) ]
   ret void
 }
+; XFAIL: call with escaped locals
+; SKIP-IDENTITY

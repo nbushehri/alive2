@@ -1,0 +1,41 @@
+---
+name: memory_value_irrelevant
+func: alive.tv_v2
+args:
+  - disable_undef_input: true
+    disable_poison_input: true
+  - !ir |
+    target datalayout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128"
+    target triple = "x86_64-unknown-linux-gnu"
+    %0 = type { [32775 x i8*] }
+    define fastcc { i64 } @0(i8* nocapture readonly %0) {
+    outline_entry:
+      %1 = bitcast i8* %0 to %0*
+      %2 = getelementptr inbounds %0, %0* %1, i64 0, i32 0, i64 32771
+      %3 = bitcast i8** %2 to i32*
+      %4 = load i32, i32* %3, align 8
+      ret { i64 } undef
+    }
+  - !ir |
+    target datalayout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128"
+    target triple = "x86_64-unknown-linux-gnu"
+    define fastcc { i64 } @0(i8* nocapture readonly %0) {
+    outline_entry:
+      %1 = bitcast i8* %0 to i64*
+      %2 = load i64, i64* %1, align 1
+      %3 = insertvalue { i64 } undef, i64 %2, 0
+      ret { i64 } %3
+    }
+expected:
+  test_input:
+    args: [[1,262112]]
+    memory:
+      - size: 0
+        align: 0
+      - size: 524288
+        align: 32
+        bytes:
+          - [null, 0, 0]
+  status: unsound
+  valid: false
+  errs: "ERROR: Target is more poisonous than source\n"

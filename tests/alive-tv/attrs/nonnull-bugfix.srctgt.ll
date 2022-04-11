@@ -21,3 +21,5 @@ entry:
 }
 
 declare i8* @g(i8*)
+; XFAIL: call with escaped locals
+; SKIP-IDENTITY

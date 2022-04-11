@@ -1,0 +1,42 @@
+---
+name: unsound_float
+func: alive.tv_v2
+args:
+  - disable_undef_input: true
+    disable_poison_input: true
+  - !ir |
+    define float @f(float %x) {
+      ret float %x
+    }
+  - !ir |
+    define float @f(float %x) {
+      %y = fadd float 0.0, %x
+      ret float %y
+    }
+expected:
+  test_input:
+    args: [-0.0]
+  status: unsound
+  valid: false
+  errs: "ERROR: Value mismatch\n"
+---
+name: unsound_fp128
+func: alive.tv_v2
+args:
+  - disable_undef_input: true
+    disable_poison_input: true
+  - !ir |
+    define fp128 @f(fp128 %x) {
+      ret fp128 %x
+    }
+  - !ir |
+    define fp128 @f(fp128 %x) {
+      %y = fadd fp128 0xL0, %x
+      ret fp128 %y
+    }
+expected:
+  test_input:
+    args: [-0.0]
+  status: unsound
+  valid: false
+  errs: "ERROR: Value mismatch\n"

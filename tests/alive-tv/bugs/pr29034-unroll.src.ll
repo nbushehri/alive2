@@ -104,4 +104,6 @@ declare i32 @music_play_api(%struct._MUSIC_OP_API_*, i32, i32, i32, i8*)
 
 declare i32 @myprintf(i8* nocapture readonly, ...)
 
-; ERROR: Source is more defined than target
+; SKIP-IDENTITY
+; ERROR: Mismatch in memory
+; XFAIL: call with escaped locals

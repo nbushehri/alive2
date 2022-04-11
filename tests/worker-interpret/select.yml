@@ -1,0 +1,75 @@
+---
+name: select_defined_0
+func: alive.interpret
+args:
+  - {}
+  - !ir |
+    define i32 @f(i1 %x, i32 %y, i32 %z) {
+      %w = select i1 %x, i32 %y, i32 %z
+      ret i32 %w
+    }
+  - args: [0, 32, 23]
+expected:
+  status: done
+  undefined: false
+  return_value: 23
+---
+name: select_defined_1
+func: alive.interpret
+args:
+  - {}
+  - !ir |
+    define i32 @f(i1 %x, i32 %y, i32 %z) {
+      %w = select i1 %x, i32 %y, i32 %z
+      ret i32 %w
+    }
+  - args: [1, 32, 23]
+expected:
+  status: done
+  undefined: false
+  return_value: 32
+---
+name: select_cond_poison
+func: alive.interpret
+args:
+  - {}
+  - !ir |
+    define i32 @f(i1 %x, i32 %y, i32 %z) {
+      %w = select i1 %x, i32 %y, i32 %z
+      ret i32 %w
+    }
+  - args: [poison, 32, 23]
+expected:
+  status: done
+  undefined: false
+  return_value: poison
+---
+name: select_poison_selected
+func: alive.interpret
+args:
+  - {}
+  - !ir |
+    define i32 @f(i1 %x, i32 %y, i32 %z) {
+      %w = select i1 %x, i32 %y, i32 %z
+      ret i32 %w
+    }
+  - args: [0, 32, poison]
+expected:
+  status: done
+  undefined: false
+  return_value: poison
+---
+name: select_poison_unselected
+func: alive.interpret
+args:
+  - {}
+  - !ir |
+    define i32 @f(i1 %x, i32 %y, i32 %z) {
+      %w = select i1 %x, i32 %y, i32 %z
+      ret i32 %w
+    }
+  - args: [1, 32, poison]
+expected:
+  status: done
+  undefined: false
+  return_value: 32

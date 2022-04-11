@@ -1,0 +1,71 @@
+---
+name: insertvalue_zeroinitializer
+func: alive.interpret
+args:
+  - {}
+  - !ir |
+    %t = type {i1, {i8, i16, i32}, i1}
+    define %t @f() {
+      %x = insertvalue %t zeroinitializer, i1 1, 0
+      %y = insertvalue %t %x, i32 32, 1, 2
+      ret %t %y
+    }
+  - args: []
+expected:
+  status: done
+  undefined: false
+  return_value: [-1, [0, 0, 32], 0]
+---
+name: insertvalue_undef
+func: alive.interpret
+args:
+  - {}
+  - !ir |
+    define fastcc { i32 } @0(i32 %0, i32 %1, i32 %2) #0 {
+    outline_entry:
+      %3 = sdiv i32 %1, %0
+      %4 = sub i32 %3, %2
+      %5 = insertvalue { i32 } undef, i32 %4, 0
+      ret { i32 } %5
+    }
+
+    attributes #0 = { minsize norecurse nounwind readnone willreturn }
+  - args: [128, -2147483648, -16777221]
+expected:
+  status: done
+  undefined: false
+  return_value: [5]
+---
+name: insertvalue_extractvalue
+func: alive.interpret
+args:
+  - {}
+  - !ir |
+    define i32 @src() {
+    %agg1 = insertvalue {i32, float} poison, i32 1, 0 
+    %res = extractvalue {i32, float} %agg1, 0
+    ret i32 %res
+    }
+  - args: []
+expected:
+  status: done
+  undefined: false
+  return_value: 1
+---
+name: insertvalue_padding_ident_mod
+func: alive.interpret
+args:
+  - {}
+  - !ir |
+    define { i8, i32 } @f({ i8*, i32 } %x) {
+      %ex = extractvalue { i8*, i32 } %x, 1
+      %ins = insertvalue { i8, i32 } undef, i32 %ex, 1
+      %ins2 = insertvalue { i8, i32 } %ins, i8 42, 0
+      ret { i8, i32 } %ins2
+    }
+
+  - args: [[[1,0], 4]]
+expected:
+  status: done
+  undefined: false
+  return_value: [42, 4]

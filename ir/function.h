@@ -123,6 +123,9 @@ public:
   std::vector<std::string_view> getGlobalVarNames() const;
 
   void addPredicate(std::unique_ptr<Predicate> &&p);
+  util::const_strip_unique_ptr<decltype(predicates)> getPredicates() const {
+    return predicates;
+  }
 
   void addUndef(std::unique_ptr<UndefValue> &&c);
   util::const_strip_unique_ptr<decltype(undefs)> getUndefs() const {
@@ -130,6 +133,9 @@ public:
   }
 
   void addAggregate(std::unique_ptr<AggregateValue> &&a);
+  util::const_strip_unique_ptr<decltype(aggregates)> getAggregates() const {
+    return aggregates;
+  }
 
   void addInput(std::unique_ptr<Value> &&c);
   util::const_strip_unique_ptr<decltype(inputs)> getInputs() const {

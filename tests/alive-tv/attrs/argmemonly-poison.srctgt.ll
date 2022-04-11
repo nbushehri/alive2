@@ -1,3 +1,6 @@
+; SKIP-IDENTITY
+; XFAIL: call with escaped locals
+
 @glb = external global i8
 
 define void @src(i8 *%p) argmemonly {
