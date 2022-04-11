@@ -169,7 +169,7 @@ private:
   bool mayalias(bool local, unsigned bid, const smt::expr &offset,
                 unsigned bytes, uint64_t align, bool write) const;
 
-  AliasSet computeAliasing(const Pointer &ptr, unsigned btyes, uint64_t align,
+  AliasSet computeAliasing(const Pointer &ptr, unsigned bytes, uint64_t align,
                            bool write) const;
 
   template <typename Fn>
@@ -261,9 +261,10 @@ public:
   std::pair<smt::expr,FnRetData>
   mkFnRet(const char *name, const std::vector<PtrInput> &ptr_inputs,
           bool is_local, const FnRetData *data = nullptr);
-  CallState mkCallState(const std::string &fnname,
-                        const std::vector<PtrInput> *ptr_inputs, bool nofree);
-  void setState(const CallState &st);
+  CallState mkCallState(const std::string &fnname, bool nofree,
+                        bool inaccessiblememonly);
+  void setState(const CallState &st, const std::vector<PtrInput> *ptr_inputs,
+                unsigned modifies_bid);
 
   // Allocates a new memory block and returns (pointer expr, allocated).
   // If bid is not specified, it creates a fresh block id by increasing

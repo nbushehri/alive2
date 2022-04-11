@@ -68,7 +68,30 @@ ostream& operator<<(ostream &os, const FnAttrs &attr) {
     os << " willreturn";
   if (attr.has(FnAttrs::DereferenceableOrNull))
     os << " dereferenceable_or_null(" << attr.derefOrNullBytes << ')';
+  if (attr.has(FnAttrs::InaccessibleMemOnly))
+    os << " inaccessiblememonly";
   return os;
+}
+
+bool ParamAttrs::refinedBy(const ParamAttrs &other) const {
+  // check attributes that are properties of the caller
+  unsigned attrs =
+    NonNull |
+    Dereferenceable |
+    NoUndef |
+    Align |
+    NoAlias |
+    DereferenceableOrNull
+  ;
+
+  auto other_params = (other.bits & attrs);
+  if ((bits & other_params) != other_params)
+    return false;
+
+  return derefBytes == other.derefBytes &&
+         derefOrNullBytes == other.derefOrNullBytes &&
+         blockSize == other.blockSize &&
+         align == other.align;
 }
 
 bool ParamAttrs::poisonImpliesUB() const {
@@ -126,11 +149,11 @@ ParamAttrs::encode(const State &s, const StateValue &val, const Type &ty) const 
                    derefOrNullBytes, align, has(NonNull), has(NoCapture));
 
   if (poisonImpliesUB()) {
-    UB.add(move(new_non_poison));
+    UB.add(std::move(new_non_poison));
     new_non_poison = true;
   }
 
-  return { move(UB), move(new_non_poison) };
+  return { std::move(UB), std::move(new_non_poison) };
 }
 
 
@@ -160,11 +183,11 @@ FnAttrs::encode(const State &s, const StateValue &val, const Type &ty) const {
                    derefOrNullBytes, align, has(NonNull), false);
 
   if (poisonImpliesUB()) {
-    UB.add(move(new_non_poison));
+    UB.add(std::move(new_non_poison));
     new_non_poison = true;
   }
 
-  return { move(UB), move(new_non_poison) };
+  return { std::move(UB), std::move(new_non_poison) };
 }
 
 
@@ -187,6 +210,44 @@ ostream& operator<<(ostream &os, const FastMathFlags &fm) {
   if (fm.flags & FastMathFlags::AFN)
     os << "afn ";
   return os;
+}
+
+
+smt::expr FpRoundingMode::toSMT() const {
+  switch (mode) {
+  case FpRoundingMode::Dynamic: UNREACHABLE();
+  case FpRoundingMode::RNE:     return expr::rne();
+  case FpRoundingMode::RNA:     return expr::rna();
+  case FpRoundingMode::RTP:     return expr::rtp();
+  case FpRoundingMode::RTN:     return expr::rtn();
+  case FpRoundingMode::RTZ:     return expr::rtz();
+  case FpRoundingMode::Default: UNREACHABLE();
+  }
+  UNREACHABLE();
+}
+
+ostream& operator<<(std::ostream &os, FpRoundingMode rounding) {
+  const char *str;
+  switch (rounding.mode) {
+  case FpRoundingMode::Dynamic: str = "dynamic"; break;
+  case FpRoundingMode::RNE:     str = "tonearest"; break;
+  case FpRoundingMode::RNA:     str = "tonearestaway"; break;
+  case FpRoundingMode::RTP:     str = "upward"; break;
+  case FpRoundingMode::RTN:     str = "downward"; break;
+  case FpRoundingMode::RTZ:     str = "towardzero"; break;
+  case FpRoundingMode::Default: UNREACHABLE();
+  }
+  return os << str;
+}
+
+ostream& operator<<(std::ostream &os, FpExceptionMode ex) {
+  const char *str;
+  switch (ex.mode) {
+  case FpExceptionMode::Ignore:  str = "ignore"; break;
+  case FpExceptionMode::MayTrap: str = "maytrap"; break;
+  case FpExceptionMode::Strict:  str = "strict"; break;
+  }
+  return os << str;
 }
 
 }

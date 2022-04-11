@@ -44,7 +44,6 @@ public:
             SAdd_Sat, UAdd_Sat, SSub_Sat, USub_Sat, SShl_Sat, UShl_Sat,
             SAdd_Overflow, UAdd_Overflow, SSub_Overflow, USub_Overflow,
             SMul_Overflow, UMul_Overflow,
-            FAdd, FSub, FMul, FDiv, FRem, FMax, FMin, FMaximum, FMinimum,
             And, Or, Xor, Cttz, Ctlz, UMin, UMax, SMin, SMax, Abs };
   enum Flags { None = 0, NSW = 1 << 0, NUW = 1 << 1, Exact = 1 << 2 };
 
@@ -52,12 +51,39 @@ private:
   Value *lhs, *rhs;
   Op op;
   unsigned flags;
-  FastMathFlags fmath;
   bool isDivOrRem() const;
 
 public:
   BinOp(Type &type, std::string &&name, Value &lhs, Value &rhs, Op op,
-        unsigned flags = 0, FastMathFlags fmath = {});
+        unsigned flags = None);
+
+  std::vector<Value*> operands() const override;
+  bool propagatesPoison() const override;
+  void rauw(const Value &what, Value &with) override;
+  void print(std::ostream &os) const override;
+  StateValue toSMT(State &s) const override;
+  smt::expr getTypeConstraints(const Function &f) const override;
+  std::unique_ptr<Instr> dup(const std::string &suffix) const override;
+};
+
+
+class FpBinOp final : public Instr {
+public:
+  enum Op { FAdd, FSub, FMul, FDiv, FRem, FMax, FMin, FMaximum, FMinimum,
+            CopySign };
+
+private:
+  Value *lhs, *rhs;
+  Op op;
+  FastMathFlags fmath;
+  FpRoundingMode rm;
+  FpExceptionMode ex;
+
+public:
+  FpBinOp(Type &type, std::string &&name, Value &lhs, Value &rhs, Op op,
+          FastMathFlags fmath, FpRoundingMode rm = {}, FpExceptionMode ex = {})
+  : Instr(type, std::move(name)), lhs(&lhs), rhs(&rhs), op(op), fmath(fmath),
+    rm(rm), ex(ex) {}
 
   std::vector<Value*> operands() const override;
   bool propagatesPoison() const override;
@@ -74,19 +100,16 @@ public:
 class UnaryOp final : public Instr {
 public:
   enum Op {
-    Copy, BitReverse, BSwap, Ctpop, IsConstant, IsNaN, FAbs, FNeg,
-    Ceil, Floor, Round, RoundEven, Trunc, Sqrt, FFS
+    Copy, BitReverse, BSwap, Ctpop, IsConstant, FFS
   };
 
 private:
   Value *val;
   Op op;
-  FastMathFlags fmath;
 
 public:
-  UnaryOp(Type &type, std::string &&name, Value &val, Op op,
-          FastMathFlags fmath = {})
-    : Instr(type, std::move(name)), val(&val), op(op), fmath(fmath) {}
+  UnaryOp(Type &type, std::string &&name, Value &val, Op op)
+    : Instr(type, std::move(name)), val(&val), op(op) {}
 
   Op getOp() const { return op; }
   Value& getValue() const { return *val; }
@@ -100,6 +123,36 @@ public:
   bool isFPInstr() const;
   std::shared_ptr<util::ConcreteVal>
   concreteEval(util::Interpreter &interpreter) const override;
+};
+
+
+class FpUnaryOp final : public Instr {
+public:
+  enum Op {
+    FAbs, FNeg, Ceil, Floor, RInt, NearbyInt, Round, RoundEven, Trunc, Sqrt
+  };
+
+private:
+  Value *val;
+  Op op;
+  FastMathFlags fmath;
+  FpRoundingMode rm;
+  FpExceptionMode ex;
+
+public:
+  FpUnaryOp(Type &type, std::string &&name, Value &val, Op op,
+            FastMathFlags fmath, FpRoundingMode rm = {},
+            FpExceptionMode ex = {})
+    : Instr(type, std::move(name)), val(&val), op(op), fmath(fmath), rm(rm),
+      ex(ex) {}
+
+  std::vector<Value*> operands() const override;
+  bool propagatesPoison() const override;
+  void rauw(const Value &what, Value &with) override;
+  void print(std::ostream &os) const override;
+  StateValue toSMT(State &s) const override;
+  smt::expr getTypeConstraints(const Function &f) const override;
+  std::unique_ptr<Instr> dup(const std::string &suffix) const override;
 };
 
 
@@ -130,16 +183,44 @@ public:
 
 class TernaryOp final : public Instr {
 public:
-  enum Op { FShl, FShr, FMA };
+  enum Op { FShl, FShr };
+
+private:
+  Value *a, *b, *c;
+  Op op;
+
+public:
+  TernaryOp(Type &type, std::string &&name, Value &a, Value &b, Value &c,
+            Op op)
+    : Instr(type, std::move(name)), a(&a), b(&b), c(&c), op(op) {}
+
+  std::vector<Value*> operands() const override;
+  bool propagatesPoison() const override;
+  void rauw(const Value &what, Value &with) override;
+  void print(std::ostream &os) const override;
+  StateValue toSMT(State &s) const override;
+  smt::expr getTypeConstraints(const Function &f) const override;
+  std::unique_ptr<Instr> dup(const std::string &suffix) const override;
+};
+
+
+class FpTernaryOp final : public Instr {
+public:
+  enum Op { FMA, MulAdd };
 
 private:
   Value *a, *b, *c;
   Op op;
   FastMathFlags fmath;
+  FpRoundingMode rm;
+  FpExceptionMode ex;
 
 public:
-  TernaryOp(Type &type, std::string &&name, Value &a, Value &b, Value &c, Op op,
-            FastMathFlags fmath = {});
+  FpTernaryOp(Type &type, std::string &&name, Value &a, Value &b, Value &c,
+              Op op, FastMathFlags fmath, FpRoundingMode rm = {},
+              FpExceptionMode ex = {})
+    : Instr(type, std::move(name)), a(&a), b(&b), c(&c), op(op), fmath(fmath),
+      rm(rm), ex(ex) {}
 
   std::vector<Value*> operands() const override;
   bool propagatesPoison() const override;
@@ -155,8 +236,7 @@ public:
 
 class ConversionOp final : public Instr {
 public:
-  enum Op { SExt, ZExt, Trunc, BitCast, SIntToFP, UIntToFP, FPToSInt, FPToUInt,
-            FPExt, FPTrunc, Ptr2Int, Int2Ptr };
+  enum Op { SExt, ZExt, Trunc, BitCast, Ptr2Int, Int2Ptr };
 
 private:
   Value *val;
@@ -177,6 +257,32 @@ public:
   std::unique_ptr<Instr> dup(const std::string &suffix) const override;
   std::shared_ptr<util::ConcreteVal>
   concreteEval(util::Interpreter &interpreter) const override;
+};
+
+
+class FpConversionOp final : public Instr {
+public:
+  enum Op { SIntToFP, UIntToFP, FPToSInt, FPToUInt, FPExt, FPTrunc, LRInt,
+            LRound };
+
+private:
+  Value *val;
+  Op op;
+  FpRoundingMode rm;
+  FpExceptionMode ex;
+
+public:
+  FpConversionOp(Type &type, std::string &&name, Value &val, Op op,
+                 FpRoundingMode rm = {}, FpExceptionMode ex = {})
+    : Instr(type, std::move(name)), val(&val), op(op), rm(rm), ex(ex) {}
+
+  std::vector<Value*> operands() const override;
+  bool propagatesPoison() const override;
+  void rauw(const Value &what, Value &with) override;
+  void print(std::ostream &os) const override;
+  StateValue toSMT(State &s) const override;
+  smt::expr getTypeConstraints(const Function &f) const override;
+  std::unique_ptr<Instr> dup(const std::string &suffix) const override;
 };
 
 
@@ -280,7 +386,7 @@ public:
 class FCmp final : public Instr {
 public:
   enum Cond { OEQ, OGT, OGE, OLT, OLE, ONE, ORD,
-              UEQ, UGT, UGE, ULT, ULE, UNE, UNO };
+              UEQ, UGT, UGE, ULT, ULE, UNE, UNO, TRUE, FALSE };
 
 private:
   Value *a, *b;
@@ -290,7 +396,7 @@ private:
 public:
   FCmp(Type &type, std::string &&name, Cond cond, Value &a, Value &b,
        FastMathFlags fmath)
-    : Instr(type, move(name)), a(&a), b(&b), cond(cond), fmath(fmath) {}
+    : Instr(type, std::move(name)), a(&a), b(&b), cond(cond), fmath(fmath) {}
 
   std::vector<Value*> operands() const override;
   void rauw(const Value &what, Value &with) override;
@@ -467,7 +573,7 @@ public:
 
 class MemInstr : public Instr {
 public:
-  MemInstr(Type &type, std::string &&name) : Instr(type, move(name)) {}
+  MemInstr(Type &type, std::string &&name) : Instr(type, std::move(name)) {}
 
   // If this instruction allocates a memory block, return its size and
   //  alignment. Returns 0 if it doesn't allocate anything.
@@ -542,19 +648,18 @@ public:
 class Malloc final : public MemInstr {
   Value *ptr = nullptr, *size;
   uint64_t align;
-  // Is this malloc (or equivalent operation, like new()) never returning
-  // null?
   bool isNonNull = false;
 
 public:
   Malloc(Type &type, std::string &&name, Value &size, bool isNonNull,
-         uint64_t align = 0)
+         uint64_t align)
     : MemInstr(type, std::move(name)), size(&size), align(align),
       isNonNull(isNonNull) {}
 
   Malloc(Type &type, std::string &&name, Value &ptr, Value &size,
-         uint64_t align = 0)
-    : MemInstr(type, std::move(name)), ptr(&ptr), size(&size), align(align) {}
+         bool isNonNull, uint64_t align)
+    : MemInstr(type, std::move(name)), ptr(&ptr), size(&size), align(align),
+      isNonNull(isNonNull) {}
 
   Value& getSize() const { return *size; }
   uint64_t getAlign() const;

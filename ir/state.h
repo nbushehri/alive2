@@ -49,11 +49,15 @@ private:
     // vars that have never been used
     std::set<const Value *> unused_vars;
 
-    // Possible number of calls per functio name that occurred so far
+    // Possible number of calls per function name that occurred so far
     // This is an over-approximation, union over all predecessors
-    struct FnCallRanges : public std::map<std::string, std::set<unsigned>> {
-      void inc(const std::string &name);
+    struct FnCallRanges
+      // bool records whether fn only accesses inaccessible/args memory only
+      : public std::map<std::string, std::pair<std::set<unsigned>, bool>> {
+      void inc(const std::string &name, bool inaccessible_or_args_memonly);
       bool overlaps(const FnCallRanges &other) const;
+      // remove all ranges but name
+      FnCallRanges project(const std::string &name) const;
     };
     FnCallRanges ranges_fn_calls;
 
@@ -121,6 +125,7 @@ private:
   const BasicBlock *current_bb = nullptr;
   CurrentDomain domain;
   Memory memory;
+  smt::expr fp_rounding_mode;
   std::set<smt::expr> undef_vars;
   ValueAnalysis analysis;
   std::array<StateValue, 64> tmp_values;
@@ -141,14 +146,16 @@ private:
     std::vector<Memory::PtrInput> args_ptr;
     ValueAnalysis::FnCallRanges fncall_ranges;
     Memory m;
-    bool readsmem, argmemonly, noret, willret;
+    bool readsmem, argmemonly, inaccessiblememonly, noret, willret;
 
     smt::expr operator==(const FnCallInput &rhs) const;
-    smt::expr refinedBy(State &s, const std::vector<StateValue> &args_nonptr,
+    smt::expr refinedBy(State &s, unsigned modifies_bid,
+                        const std::vector<StateValue> &args_nonptr,
                         const std::vector<Memory::PtrInput> &args_ptr,
                         const ValueAnalysis::FnCallRanges &fncall_ranges,
                         const Memory &m, bool readsmem, bool argmemonly,
-                        bool noret, bool willret) const;
+                        bool inaccessiblememonly, bool noret,
+                        bool willret) const;
 
     auto operator<=>(const FnCallInput &rhs) const = default;
   };
@@ -168,6 +175,7 @@ private:
   std::map<std::string, std::map<FnCallInput, FnCallOutput>> fn_call_data;
   smt::expr fn_call_pre = true;
   std::set<smt::expr> fn_call_qvars;
+  std::unordered_map<std::string, unsigned> inaccessiblemem_bids;
 
   VarArgsData var_args_data;
 
@@ -233,6 +241,7 @@ public:
   auto& getFn() const { return f; }
   auto& getMemory() const { return memory; }
   auto& getMemory() { return memory; }
+  auto& getFpRoundingMode() const { return fp_rounding_mode; }
   auto& getAxioms() const { return axioms; }
   auto& getPre() const { return precondition; }
   auto& getFnPre() const { return fn_call_pre; }

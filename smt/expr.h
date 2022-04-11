@@ -212,21 +212,25 @@ public:
   expr isFPNegative() const;
   expr isFPNegZero() const;
 
-  expr fadd(const expr &rhs) const;
-  expr fsub(const expr &rhs) const;
-  expr fmul(const expr &rhs) const;
-  expr fdiv(const expr &rhs) const;
+  static expr rne();
+  static expr rna();
+  static expr rtp();
+  static expr rtn();
+  static expr rtz();
+
+  expr fadd(const expr &rhs, const expr &rm) const;
+  expr fsub(const expr &rhs, const expr &rm) const;
+  expr fmul(const expr &rhs, const expr &rm) const;
+  expr fdiv(const expr &rhs, const expr &rm) const;
   expr fabs() const;
   expr fneg() const;
-  expr sqrt() const;
+  expr sqrt(const expr &rm) const;
 
-  static expr fma(const expr &a, const expr &b, const expr &c);
+  static expr fma(const expr &a, const expr &b, const expr &c, const expr &rm);
 
   expr ceil() const;
   expr floor() const;
-  expr roundna() const;
-  expr roundne() const;
-  expr roundtz() const;
+  expr round(const expr &rm) const;
 
   expr foeq(const expr &rhs) const;
   expr fogt(const expr &rhs) const;
@@ -298,12 +302,12 @@ public:
   expr float2BV() const;
   expr float2Real() const;
   expr BV2float(const expr &type) const;
-  expr float2Float(const expr &type) const;
+  expr float2Float(const expr &type, const expr &rm) const;
 
-  expr fp2sint(unsigned bits) const;
-  expr fp2uint(unsigned bits) const;
-  expr sint2fp(const expr &type) const;
-  expr uint2fp(const expr &type) const;
+  expr fp2sint(unsigned bits, const expr &rm) const;
+  expr fp2uint(unsigned bits, const expr &rm) const;
+  expr sint2fp(const expr &type, const expr &rm) const;
+  expr uint2fp(const expr &type, const expr &rm) const;
 
   // we don't expose SMT expr types, so range must be passed as a dummy value
   // of the desired type

@@ -10,30 +10,30 @@ using namespace std;
 
 namespace smt {
 
-void AndExpr::add(const expr &e) {
+void AndExpr::add(const expr &e, unsigned limit) {
   if (e.isTrue())
     return;
 
   expr a, b;
-  if (e.isAnd(a, b)) {
-    add(move(a));
-    add(move(b));
+  if (limit > 0 && e.isAnd(a, b)) {
+    add(std::move(a), limit-1);
+    add(std::move(b), limit-1);
     return;
   }
   exprs.insert(e);
 }
 
-void AndExpr::add(expr &&e) {
+void AndExpr::add(expr &&e, unsigned limit) {
   if (e.isTrue())
     return;
 
   expr a, b;
-  if (e.isAnd(a, b)) {
-    add(move(a));
-    add(move(b));
+  if (limit > 0 && e.isAnd(a, b)) {
+    add(std::move(a), limit-1);
+    add(std::move(b), limit-1);
     return;
   }
-  exprs.insert(move(e));
+  exprs.insert(std::move(e));
 }
 
 void AndExpr::add(const AndExpr &other) {
@@ -68,7 +68,7 @@ ostream &operator<<(ostream &os, const AndExpr &e) {
 
 void OrExpr::add(expr &&e) {
   if (!e.isFalse())
-    exprs.insert(move(e));
+    exprs.insert(std::move(e));
 }
 
 void OrExpr::add(const OrExpr &other) {
@@ -124,7 +124,7 @@ DisjointExpr<expr>::DisjointExpr(const expr &e, unsigned depth_limit) {
     if ((worklist.size() + vals.size()) >= 32 ||
         hit_half_memory_limit()) {
       for (auto &[v, c] : worklist) {
-        add(move(v), move(c));
+        add(std::move(v), std::move(c));
       }
       break;
     }
@@ -133,14 +133,14 @@ DisjointExpr<expr>::DisjointExpr(const expr &e, unsigned depth_limit) {
     worklist.pop_back();
 
     if (v.isIf(cond, then, els)) {
-      worklist.emplace_back(move(then), c && cond);
-      worklist.emplace_back(move(els), c && !cond);
+      worklist.emplace_back(std::move(then), c && cond);
+      worklist.emplace_back(std::move(els), c && !cond);
     }
     else if (v.isConcat(a, b)) {
       DisjointExpr<expr> lhs(a, depth_limit);
       DisjointExpr<expr> rhs(b, depth_limit);
       if (lhs.size() == 1 && rhs.size() == 1) {
-        add(move(v), move(c));
+        add(std::move(v), std::move(c));
         continue;
       }
 
@@ -165,7 +165,7 @@ DisjointExpr<expr>::DisjointExpr(const expr &e, unsigned depth_limit) {
     else if (v.isExtract(a, high, low)) {
       DisjointExpr<expr> vals(a, depth_limit);
       if (vals.size() == 1) {
-        add(move(v), move(c));
+        add(std::move(v), std::move(c));
         continue;
       }
 
@@ -174,14 +174,14 @@ DisjointExpr<expr>::DisjointExpr(const expr &e, unsigned depth_limit) {
       }
     }
     else {
-      add(move(v), move(c));
+      add(std::move(v), std::move(c));
     }
   } while (!worklist.empty());
 }
 
 
 void FunctionExpr::add(const expr &key, expr &&val) {
-  ENSURE(fn.emplace(key, move(val)).second);
+  ENSURE(fn.emplace(key, std::move(val)).second);
 }
 
 void FunctionExpr::add(const FunctionExpr &other) {
