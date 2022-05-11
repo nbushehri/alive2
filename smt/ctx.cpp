@@ -20,7 +20,7 @@ static void z3_error_handler(Z3_context ctx, Z3_error_code err) {
     return;
 
   dbg() << "Severe Z3 error: " << str << " [code=" << err << "]\n";
-  _Exit(-1);
+  abort();
 }
 
 namespace smt {
@@ -48,8 +48,19 @@ void context::init() {
 
 void context::destroy() {
   Z3_params_dec_ref(ctx, no_timeout_param);
-  Z3_close_log();
   Z3_del_context(ctx);
 }
 
+}
+
+
+// close log file on program exit
+namespace {
+struct close_log {
+  ~close_log() {
+    Z3_close_log();
+  }
+};
+
+close_log close;
 }

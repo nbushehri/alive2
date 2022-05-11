@@ -20,3 +20,5 @@ entry:
 }
 
 declare void @e(i32**)
+; XFAIL: call with escaped locals
+; SKIP-IDENTITY

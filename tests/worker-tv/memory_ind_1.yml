@@ -1,0 +1,78 @@
+---
+name: memory_ind_1
+func: alive.tv_v2
+args:
+  - disable_undef_input: true
+    disable_poison_input: true
+  - !ir |
+    define i32 @src(i32**  %0) {
+      %2 = load i32*, i32** %0, align 8
+      store i32 42, i32* %2, align 4
+      %res = load i32, i32* %2
+      ret i32 %res
+    }
+  - !ir |
+    define i32 @tgt(i32**  %0) {
+      ret i32 42
+    }
+expected:
+  test_input:
+    args: [[1, 16]]
+    memory:
+      - size: 0
+        align: 0
+      - size: 33
+        align: 32
+        bytes:
+          - [18,255,[2,0,2]]
+          - [20,255,[2,0,4]]
+          - [0,0,64]
+          - [21,255,[2,0,5]]
+          - [16,255,[2,0,0]]
+          - [22,255,[2,0,6]]
+          - [23,255,[2,0,7]]
+          - [17,255,[2,0,1]]
+          - [null,255,[2,0,3]]
+  status: unsound
+  valid: false
+  errs: "ERROR: Mismatch in memory\n"
+---
+name: memory_ind_2
+func: alive.tv_v2
+args:
+  - disable_undef_input: true
+    disable_poison_input: true
+  - !ir |
+    define i32 @src(i32**  %0) {
+      %2 = load i32*, i32** %0, align 8
+      store i32 42, i32* %2, align 4
+      %res = load i32, i32* %2
+      ret i32 %res
+    }
+  - !ir |
+    define i32 @tgt(i32** %0) {
+      %2 = load i32*, i32** %0, align 8
+      store i32 42, i32* %2, align 4
+      ret i32 40
+    }
+expected:
+  test_input:
+    args: [[1, 0]]
+    memory:
+      - size: 0
+        align: 0
+      - size: 128
+        align: 32
+        bytes:
+          - [2,255,[1,64,2]]
+          - [0,255,[1,64,0]]
+          - [5,255,[1,64,5]]
+          - [3,255,[1,64,3]]
+          - [6,255,[1,64,6]]
+          - [7,255,[1,64,7]]
+          - [1,255,[1,64,1]]
+          - [4,255,[1,64,4]]
+          - [null,0,0]
+  status: unsound
+  valid: false
+  errs: "ERROR: Value mismatch\n"

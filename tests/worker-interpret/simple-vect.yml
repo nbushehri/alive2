@@ -1,0 +1,151 @@
+---
+name: add_vect_i32
+func: alive.interpret
+args:
+  - {}
+  - !ir | 
+    define <2 x i8> @test9vec(<2 x i8> %a) {
+      %b = add <2 x i8> %a, <i8 12, i8 40>
+      ret <2 x i8> %b
+    }
+  - args: [[10, 11]]
+expected:
+  status: done
+  undefined: false
+  return_value: [22, 51]
+---
+name: mul_vect_i32
+func: alive.interpret
+args:
+  - {}
+  - !ir | 
+    define <2 x i32> @pow2_multiplier_vec(<2 x i32> %A) {
+      %B = mul <2 x i32> %A, <i32 8, i32 8>
+      ret <2 x i32> %B
+    }
+  - args: [[33, 121]]
+expected:
+  status: done
+  undefined: false
+  return_value: [264, 968]
+---
+name: xor_vect_i8
+func: alive.interpret
+args:
+  - {}
+  - !ir | 
+    define <2 x i1> @test9vec(<2 x i8> %a) {
+      %b = xor <2 x i8> %a, <i8 123, i8 123>
+      %c = icmp eq <2 x i8> %b, <i8 34, i8 34>
+      ret <2 x i1> %c
+    }
+  - args: [[10, 89]]
+expected:
+  status: done
+  undefined: false
+  return_value: [0, -1]
+---
+name: sub_vect_i32
+func: alive.interpret
+args:
+  - {}
+  - !ir | 
+    define <2 x i32> @sub_constant_vec(<2 x i32> %x) {
+      %r = sub <2 x i32> %x, <i32 42, i32 -12>
+      ret <2 x i32> %r
+    }
+  - args: [[42, 12]]
+expected:
+  status: done
+  undefined: false
+  return_value: [0, 24]
+---
+name: sdiv_vect_i32
+func: alive.interpret
+args:
+  - {}
+  - !ir | 
+    define <2 x i32> @test_sdiv_canonicalize_vec(<2 x i32> %x, <2 x i32> %y) {
+    ; CHECK-LABEL: @test_sdiv_canonicalize_vec(
+    ; CHECK-NEXT:    [[SDIV1:%.*]] = sdiv <2 x i32> [[X:%.*]], [[Y:%.*]]
+    ; CHECK-NEXT:    [[SDIV:%.*]] = sub nsw <2 x i32> zeroinitializer, [[SDIV1]]
+    ; CHECK-NEXT:    ret <2 x i32> [[SDIV]]
+    ;
+      %neg = sub nsw <2 x i32> <i32 0, i32 0>, %x
+      %sdiv = sdiv <2 x i32> %neg, %y
+      ret <2 x i32> %sdiv
+    }
+  - args: [[42, 12],[2,2]]
+expected:
+  status: done
+  undefined: false
+  return_value: [-21, -6]
+---
+name: udiv_vect_i32
+func: alive.interpret
+args:
+  - {}
+  - !ir | 
+    define <2 x i32> @test_sdiv_canonicalize_vec(<2 x i32> %x, <2 x i32> %y) {
+    ; CHECK-LABEL: @test_sdiv_canonicalize_vec(
+    ; CHECK-NEXT:    [[SDIV1:%.*]] = sdiv <2 x i32> [[X:%.*]], [[Y:%.*]]
+    ; CHECK-NEXT:    [[SDIV:%.*]] = sub nsw <2 x i32> zeroinitializer, [[SDIV1]]
+    ; CHECK-NEXT:    ret <2 x i32> [[SDIV]]
+    ;
+      %neg = sub nsw <2 x i32> <i32 0, i32 0>, %x
+      %udiv = udiv <2 x i32> %neg, %y
+      ret <2 x i32> %udiv
+    }
+  - args: [[42, 12],[2,2]]
+expected:
+  status: done
+  undefined: false
+  return_value: [2147483627, 2147483642]
+---
+name: srem_vect_i32
+func: alive.interpret
+args:
+  - {}
+  - !ir | 
+    define <2 x i32> @test_srem_canonicalize_vec(<2 x i32> %x, <2 x i32> %y) {
+      %neg = sub nsw <2 x i32> <i32 0, i32 0>, %x
+      %srem = srem <2 x i32> %neg, %y
+      ret <2 x i32> %srem
+    }
+  - args: [[42, 12],[2,2]]
+expected:
+  status: done
+  undefined: false
+  return_value: [0, 0]
+---
+name: srem_vect_i32_2
+func: alive.interpret
+args:
+  - {}
+  - !ir | 
+    define <2 x i32> @test_srem_canonicalize_vec(<2 x i32> %x, <2 x i32> %y) {
+      %neg = sub nsw <2 x i32> <i32 0, i32 0>, %x
+      %srem = srem <2 x i32> %neg, %y
+      ret <2 x i32> %srem
+    }
+  - args: [[1423, -18833],[7,77]]
+expected:
+  status: done
+  undefined: false
+  return_value: [-2, 45]
+---
+name: urem_vect_i32
+func: alive.interpret
+args:
+  - {}
+  - !ir | 
+    define <2 x i32> @test_urem_vec(<2 x i32> %x, <2 x i32> %y) {
+      %neg = sub nsw <2 x i32> <i32 0, i32 0>, %x
+      %urem = urem <2 x i32> %neg, %y
+      ret <2 x i32> %urem
+    }
+  - args: [[1423, -18833],[7,77]]
+expected:
+  status: done
+  undefined: false
+  return_value: [2, 45]

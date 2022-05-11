@@ -57,7 +57,7 @@ static expr simplify_const(expr &&e, const expr &input,
     cout << "\n[WARN] missing fold: " << e << "\n->\n" << e.simplify() << '\n';
   }
 #endif
-  return move(e);
+  return std::move(e);
 }
 
 static bool is_power2(const expr &e, unsigned &log) {
@@ -76,7 +76,7 @@ static bool is_power2(const expr &e, unsigned &log) {
 
 namespace smt {
 
-expr::expr(Z3_ast ast) : ptr((uintptr_t)ast) {
+expr::expr(Z3_ast ast) noexcept : ptr((uintptr_t)ast) {
   static_assert(sizeof(Z3_ast) == sizeof(uintptr_t));
   assert(isZ3Ast() && isValid());
   incRef();
@@ -100,7 +100,7 @@ Z3_ast expr::ast() const {
   return 0;
 }
 
-expr::expr(const expr &other) {
+expr::expr(const expr &other) noexcept {
   if (!other.isValid()) {
     ptr = 0;
   } else if (other.isZ3Ast()) {
@@ -111,7 +111,7 @@ expr::expr(const expr &other) {
   }
 }
 
-expr::~expr() {
+expr::~expr() noexcept {
   if (isValid()) {
     if (isZ3Ast()) {
       decRef();
@@ -227,6 +227,14 @@ expr expr::mkHalf(float n) {
   return Z3_mk_fpa_numeral_float(ctx(), n, Z3_mk_fpa_sort_half(ctx()));
 }
 
+static Z3_sort mk_bfloat_sort() {
+  return Z3_mk_fpa_sort(ctx(), 8, 8);
+}
+
+expr expr::mkBFloat(float n) {
+  return Z3_mk_fpa_numeral_float(ctx(), n, mk_bfloat_sort());
+}
+
 expr expr::mkFloat(float n) {
   return Z3_mk_fpa_numeral_float(ctx(), n, Z3_mk_fpa_sort_single(ctx()));
 }
@@ -297,6 +305,10 @@ expr expr::mkBoolVar(const char *name) {
 
 expr expr::mkHalfVar(const char *name) {
   return ::mkVar(name, Z3_mk_fpa_sort_half(ctx()));
+}
+
+expr expr::mkBFloatVar(const char *name) {
+  return ::mkVar(name, mk_bfloat_sort());
 }
 
 expr expr::mkFloatVar(const char *name) {
@@ -422,11 +434,12 @@ bool expr::isUInt(uint64_t &n) const {
 bool expr::isInt(int64_t &n) const {
   C();
   auto bw = bits();
-  if (bw > 64 || !Z3_get_numeral_int64(ctx(), ast(), &n))
+  uint64_t u;
+  // We can't use Z3_get_numeral_int64 as it treats bitvectors as unsigned.
+  if (bw > 64 || !isUInt(u))
     return false;
 
-  if (bw < 64)
-    n = (int64_t)((uint64_t)n << (64 - bw)) >> (64 - bw);
+  n = (int64_t)(u << (64 - bw)) >> (64 - bw);
   return true;
 }
 
@@ -520,6 +533,13 @@ bool expr::isLoad(expr &array, expr &idx) const {
   return isBinOp(array, idx, Z3_OP_SELECT);
 }
 
+bool expr::isFuncAsArray(expr &val) const {
+  if (!Z3_is_as_array(ctx(), ast()))
+    return false;
+  val = Z3_func_decl_to_ast(ctx(), Z3_get_as_array_func_decl(ctx(), ast()));
+  return true;
+}
+
 bool expr::isFPAdd(expr &rounding, expr &lhs, expr &rhs) const {
   return isTernaryOp(rounding, lhs, rhs, Z3_OP_FPA_ADD);
 }
@@ -538,6 +558,10 @@ bool expr::isFPDiv(expr &rounding, expr &lhs, expr &rhs) const {
 
 bool expr::isFPNeg(expr &val) const {
   return isUnOp(val, Z3_OP_FPA_NEG);
+}
+
+bool expr::isIsFPZero() const {
+  return isAppOf(Z3_OP_FPA_IS_ZERO);
 }
 
 bool expr::isNaNCheck(expr &fp) const {
@@ -560,6 +584,13 @@ unsigned expr::min_leading_zeros() const {
   } else if (isUInt(n)) {
     return countl_zero(n) - (64 - bits());
   }
+  return 0;
+}
+
+unsigned expr::min_trailing_ones() const {
+  uint64_t n;
+  if (isUInt(n))
+    return countr_one(n);
   return 0;
 }
 
@@ -960,15 +991,25 @@ expr expr::abs() const {
   return mkIf(sge(mkUInt(0, s)), *this, mkInt(-1, s) * *this);
 }
 
+#define fold_fp_neg(fn)                                  \
+  do {                                                   \
+  expr cond, neg, v, v2;                                 \
+  if (isIf(cond, neg, v) && neg.isFPNeg(v2) && v.eq(v2)) \
+    return v.fn();                                       \
+} while (0)
+
 expr expr::isNaN() const {
+  fold_fp_neg(isNaN);
   return unop_fold(Z3_mk_fpa_is_nan);
 }
 
 expr expr::isInf() const {
+  fold_fp_neg(isInf);
   return unop_fold(Z3_mk_fpa_is_infinite);
 }
 
 expr expr::isFPZero() const {
+  fold_fp_neg(isFPZero);
   return unop_fold(Z3_mk_fpa_is_zero);
 }
 
@@ -980,32 +1021,48 @@ expr expr::isFPNegZero() const {
   return isFPZero() && isFPNegative();
 }
 
-// TODO: make rounding mode customizable
-expr expr::fadd(const expr &rhs) const {
-  C(rhs);
-  auto rm = Z3_mk_fpa_round_nearest_ties_to_even(ctx());
-  return simplify_const(Z3_mk_fpa_add(ctx(), rm, ast(), rhs()), *this, rhs);
+expr expr::rne() {
+  return Z3_mk_fpa_rne(ctx());
 }
 
-expr expr::fsub(const expr &rhs) const {
-  C(rhs);
-  auto rm = Z3_mk_fpa_round_nearest_ties_to_even(ctx());
-  return simplify_const(Z3_mk_fpa_sub(ctx(), rm, ast(), rhs()), *this, rhs);
+expr expr::rna() {
+  return Z3_mk_fpa_rna(ctx());
 }
 
-expr expr::fmul(const expr &rhs) const {
-  C(rhs);
-  auto rm = Z3_mk_fpa_round_nearest_ties_to_even(ctx());
-  return simplify_const(Z3_mk_fpa_mul(ctx(), rm, ast(), rhs()), *this, rhs);
+expr expr::rtp() {
+  return Z3_mk_fpa_rtp(ctx());
 }
 
-expr expr::fdiv(const expr &rhs) const {
-  C(rhs);
-  auto rm = Z3_mk_fpa_round_nearest_ties_to_even(ctx());
-  return simplify_const(Z3_mk_fpa_div(ctx(), rm, ast(), rhs()), *this, rhs);
+expr expr::rtn() {
+  return Z3_mk_fpa_rtn(ctx());
+}
+
+expr expr::rtz() {
+  return Z3_mk_fpa_rtz(ctx());
+}
+
+expr expr::fadd(const expr &rhs, const expr &rm) const {
+  C(rhs, rm);
+  return simplify_const(Z3_mk_fpa_add(ctx(), rm(), ast(), rhs()), *this, rhs);
+}
+
+expr expr::fsub(const expr &rhs, const expr &rm) const {
+  C(rhs, rm);
+  return simplify_const(Z3_mk_fpa_sub(ctx(), rm(), ast(), rhs()), *this, rhs);
+}
+
+expr expr::fmul(const expr &rhs, const expr &rm) const {
+  C(rhs, rm);
+  return simplify_const(Z3_mk_fpa_mul(ctx(), rm(), ast(), rhs()), *this, rhs);
+}
+
+expr expr::fdiv(const expr &rhs, const expr &rm) const {
+  C(rhs, rm);
+  return simplify_const(Z3_mk_fpa_div(ctx(), rm(), ast(), rhs()), *this, rhs);
 }
 
 expr expr::fabs() const {
+  fold_fp_neg(fabs);
   return unop_fold(Z3_mk_fpa_abs);
 }
 
@@ -1013,51 +1070,28 @@ expr expr::fneg() const {
   return unop_fold(Z3_mk_fpa_neg);
 }
 
-expr expr::sqrt() const {
-  C();
-  auto rm = Z3_mk_fpa_round_nearest_ties_to_even(ctx());
-  return simplify_const(Z3_mk_fpa_sqrt(ctx(), rm, ast()), *this);
+expr expr::sqrt(const expr &rm) const {
+  C(rm);
+  return simplify_const(Z3_mk_fpa_sqrt(ctx(), rm(), ast()), *this);
 }
 
-expr expr::fma(const expr &a, const expr &b, const expr &c) {
-  C2(a, b, c);
-  auto rm = Z3_mk_fpa_round_nearest_ties_to_even(ctx());
-  return simplify_const(Z3_mk_fpa_fma(ctx(), rm, a(), b(), c()), a, b, c);
+expr expr::fma(const expr &a, const expr &b, const expr &c, const expr &rm) {
+  C2(a, b, c, rm);
+  return simplify_const(Z3_mk_fpa_fma(ctx(), rm(), a(), b(), c()), a, b, c);
 }
 
 expr expr::ceil() const {
-  C();
-  return
-    simplify_const(
-      Z3_mk_fpa_round_to_integral(ctx(), Z3_mk_fpa_rtp(ctx()), ast()), *this);
+  return round(rtp());
 }
 
 expr expr::floor() const {
-  C();
-  return
-    simplify_const(
-      Z3_mk_fpa_round_to_integral(ctx(), Z3_mk_fpa_rtn(ctx()), ast()), *this);
+  return round(rtn());
 }
 
-expr expr::roundna() const {
-  C();
+expr expr::round(const expr &rm) const {
+  C(rm);
   return
-    simplify_const(
-      Z3_mk_fpa_round_to_integral(ctx(), Z3_mk_fpa_rna(ctx()), ast()), *this);
-}
-
-expr expr::roundne() const {
-  C();
-  return
-    simplify_const(
-      Z3_mk_fpa_round_to_integral(ctx(), Z3_mk_fpa_rne(ctx()), ast()), *this);
-}
-
-expr expr::roundtz() const {
-  C();
-  return
-    simplify_const(
-      Z3_mk_fpa_round_to_integral(ctx(), Z3_mk_fpa_rtz(ctx()), ast()), *this);
+    simplify_const(Z3_mk_fpa_round_to_integral(ctx(), rm(), ast()), *this);
 }
 
 expr expr::foeq(const expr &rhs) const {
@@ -1436,6 +1470,10 @@ expr expr::ule(const expr &rhs) const {
   if (rhs.isZero() || isAllOnes())
     return *this == rhs;
 
+  // 00... <= ..111 -> true
+  if (min_leading_zeros() + rhs.min_trailing_ones() >= bits())
+    return true;
+
   return binop_fold(rhs, Z3_mk_bvule);
 }
 
@@ -1656,7 +1694,7 @@ expr expr::extract(unsigned high, unsigned low, unsigned depth) const {
             return arg;
 
           if (first)
-            extracted = move(arg);
+            extracted = std::move(arg);
           else if (!arg.eq(extracted))
             extracted = expr();
           first = false;
@@ -1706,36 +1744,32 @@ expr expr::BV2float(const expr &type) const {
   return simplify_const(Z3_mk_fpa_to_fp_bv(ctx(), ast(), type.sort()), *this);
 }
 
-expr expr::float2Float(const expr &type) const {
-  C(type);
-  auto rm = Z3_mk_fpa_round_nearest_ties_to_even(ctx());
-  return Z3_mk_fpa_to_fp_float(ctx(), rm, ast(), type.sort());
+expr expr::float2Float(const expr &type, const expr &rm) const {
+  C(type, rm);
+  return Z3_mk_fpa_to_fp_float(ctx(), rm(), ast(), type.sort());
 }
 
-expr expr::fp2sint(unsigned bits) const {
-  C();
-  auto rm = Z3_mk_fpa_rtz(ctx());
-  return simplify_const(Z3_mk_fpa_to_sbv(ctx(), rm, ast(), bits), *this);
+expr expr::fp2sint(unsigned bits, const expr &rm) const {
+  C(rm);
+  return simplify_const(Z3_mk_fpa_to_sbv(ctx(), rm(), ast(), bits), *this);
 }
 
-expr expr::fp2uint(unsigned bits) const {
-  C();
-  auto rm = Z3_mk_fpa_rtz(ctx());
-  return simplify_const(Z3_mk_fpa_to_ubv(ctx(), rm, ast(), bits), *this);
+expr expr::fp2uint(unsigned bits, const expr &rm) const {
+  C(rm);
+  return simplify_const(Z3_mk_fpa_to_ubv(ctx(), rm(), ast(), bits), *this);
 }
 
-expr expr::sint2fp(const expr &type) const {
-  C(type);
-  auto rm = Z3_mk_fpa_round_nearest_ties_to_even(ctx());
-  return simplify_const(Z3_mk_fpa_to_fp_signed(ctx(), rm, ast(), type.sort()),
+expr expr::sint2fp(const expr &type, const expr &rm) const {
+  C(type, rm);
+  return simplify_const(Z3_mk_fpa_to_fp_signed(ctx(), rm(), ast(), type.sort()),
                         *this);
 }
 
-expr expr::uint2fp(const expr &type) const {
-  C(type);
-  auto rm = Z3_mk_fpa_round_nearest_ties_to_even(ctx());
-  return simplify_const(Z3_mk_fpa_to_fp_unsigned(ctx(), rm, ast(), type.sort()),
-                        *this);
+expr expr::uint2fp(const expr &type, const expr &rm) const {
+  C(type, rm);
+  return
+    simplify_const(Z3_mk_fpa_to_fp_unsigned(ctx(), rm(), ast(), type.sort()),
+                   *this);
 }
 
 expr expr::mkUF(const char *name, const vector<expr> &args, const expr &range) {
@@ -1841,7 +1875,7 @@ expr expr::mkIf(const expr &cond, const expr &then, const expr &els) {
 
 expr expr::mkForAll(const set<expr> &vars, expr &&val) {
   if (vars.empty() || val.isConst() || !val.isValid())
-    return move(val);
+    return std::move(val);
 
   unique_ptr<Z3_app[]> vars_ast(new Z3_app[vars.size()]);
   unsigned i = 0;
@@ -1982,22 +2016,22 @@ set<expr> expr::leafs(unsigned max) const {
   unordered_set<Z3_ast> seen;
   set<expr> ret;
   do {
-    auto val = move(worklist.back());
+    auto val = std::move(worklist.back());
     worklist.pop_back();
     if (!seen.emplace(val()).second)
       continue;
 
     expr cond, then, els;
     if (val.isIf(cond, then, els)) {
-      worklist.emplace_back(move(then));
-      worklist.emplace_back(move(els));
+      worklist.emplace_back(std::move(then));
+      worklist.emplace_back(std::move(els));
     } else {
-      ret.emplace(move(val));
+      ret.emplace(std::move(val));
     }
 
     if (ret.size() + worklist.size() >= max) {
       for (auto &v : worklist)
-        ret.emplace(move(v));
+        ret.emplace(std::move(v));
       break;
     }
   } while (!worklist.empty());

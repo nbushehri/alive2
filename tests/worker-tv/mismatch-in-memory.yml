@@ -1,0 +1,63 @@
+---
+name: unsound_store
+func: alive.tv_v2
+args:
+  - disable_undef_input: true
+    disable_poison_input: true
+  - !ir |
+    define void @src(i8* dereferenceable(1) %x) {
+      ret void
+    }
+  - !ir |
+    define void @tgt(i8* dereferenceable(1) %x) {
+      store i8 0, i8* %x
+      ret void
+    }
+expected:
+  test_input:
+    args: [[1, 0]]
+    memory:
+      - size: 0
+        align: 0
+      - size: 3
+        align: 32
+        bytes:
+          - [0, 255, 254]
+          - [null, 0, 0]
+  status: unsound
+  valid: false
+  errs: "ERROR: Mismatch in memory\n"
+---
+name: unsound_store_aligned
+func: alive.tv_v2
+args:
+  - disable_undef_input: true
+    disable_poison_input: true
+  - !ir |
+    define void @src(i16* dereferenceable(2) align(2) %p) {
+      %x = load i16, i16* %p, align 2
+      store i16 %x, i16* %p, align 2
+      ret void
+    }
+  - !ir |
+    define void @tgt(i16* dereferenceable(2) align(2) %p) {
+      %x = load i16, i16* %p, align 2
+      %y = and i16 %x, 32767
+      store i16 %y, i16* %p, align 2
+      ret void
+    }
+expected:
+  test_input:
+    args: [[1, 0]]
+    memory:
+      - size: 0
+        align: 0
+      - size: 8
+        align: 2
+        bytes:
+          - [1, 255, 192]
+          - [0, 255, 0]
+          - [null, 0, 0]
+  status: unsound
+  valid: false
+  errs: "ERROR: Mismatch in memory\n"

@@ -1,0 +1,77 @@
+---
+name: id_struct_anon_empty
+func: alive.interpret
+args:
+  - {}
+  - !ir 'define {} @f({} %x) { ret {} %x }'
+  - args: [[]]
+expected:
+  status: done
+  undefined: false
+  return_value: []
+---
+name: id_struct_anon_empty_2
+func: alive.interpret
+args:
+  - {}
+  - !ir 'define {} @src({} %v, {} %w) { ret {} %v }'
+  - args: [[], []]
+expected:
+  status: done
+  undefined: false
+  return_value: []
+---
+name: id_struct_anon
+func: alive.interpret
+args:
+  - {}
+  - !ir 'define {i8, i32} @f({i8, i32} %x) { ret {i8, i32} %x }'
+  - args: [[12, 34]]
+expected:
+  status: done
+  undefined: false
+  return_value: [12, 34]
+---
+name: id_struct_packed_anon
+func: alive.interpret
+args:
+  - {}
+  - !ir 'define <{i8, i32}> @f(<{i8, i32}> %x) { ret <{i8, i32}> %x }'
+  - args: [[12, 34]]
+expected:
+  status: done
+  undefined: false
+  return_value: [12, 34]
+---
+name: id_struct_named_empty
+func: alive.interpret
+args:
+  - {}
+  - !ir '%t = type {} define %t @f(%t %x) { ret %t %x }'
+  - args: [[]]
+expected:
+  status: done
+  undefined: false
+  return_value: []
+---
+name: id_struct_named
+func: alive.interpret
+args:
+  - {}
+  - !ir '%t = type {i8, i32} define %t @f(%t %x) { ret %t %x }'
+  - args: [[12, 34]]
+expected:
+  status: done
+  undefined: false
+  return_value: [12, 34]
+---
+name: id_struct_packed_named
+func: alive.interpret
+args:
+  - {}
+  - !ir '%t = type <{i8, i32}> define %t @f(%t %x) { ret %t %x }'
+  - args: [[12, 34]]
+expected:
+  status: done
+  undefined: false
+  return_value: [12, 34]

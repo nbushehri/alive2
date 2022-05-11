@@ -1,0 +1,20 @@
+---
+name: unsound_with_approximations
+func: alive.tv_v2
+args:
+  - disable_undef_input: true
+    disable_poison_input: true
+  - !ir |
+    define half @f(half %x) {
+      %y = fadd half 0.0, %x
+      ret half %y
+    }
+  - !ir |
+    define half @f(half %x) {
+      %y = fadd reassoc half 0.0, %x
+      ret half %y
+    }
+expected:
+  status: unsound_with_approximations
+  valid: null
+  errs: "ERROR: Approximations done:\n - reassoc\n\n"

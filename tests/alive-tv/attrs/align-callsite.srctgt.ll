@@ -14,3 +14,5 @@ define void @tgt(i8* %p) {
 declare void @g(i8* align(4))
 
 ; ERROR: Source is more defined than target
+; XFAIL: call with escaped locals
+; SKIP-IDENTITY

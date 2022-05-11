@@ -9,7 +9,7 @@ define i32 @calloc_init(i32 %x) {
   ret i32 %v
 }
 
-; CHECK: bits_byte: 32
+; CHECK: bits_byte: 8
 
 declare noalias i8* @calloc(i64, i64)
 declare void @free(i8*)

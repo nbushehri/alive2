@@ -27,3 +27,5 @@ else:
 }
 
 declare void @f(i8*)
+; XFAIL: call with escaped locals
+; SKIP-IDENTITY

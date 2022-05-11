@@ -1,0 +1,22 @@
+---
+name: id_vec_i32
+func: alive.interpret
+args:
+  - {}
+  - !ir 'define <4 x i32> @f(<4 x i32> %x) { ret <4 x i32> %x }'
+  - args: [[0, -1, 1, 0x80000000]]
+expected:
+  status: done
+  undefined: false
+  return_value: [0, -1, 1, -2147483648]
+---
+name: id_vec_float
+func: alive.interpret
+args:
+  - {}
+  - !ir 'define <4 x float> @f(<4 x float> %x) { ret <4 x float> %x }'
+  - args: [[0.0, -1.0, 1.0, 1e20]]
+expected:
+  status: done
+  undefined: false
+  return_value: [0.0, -1.0, 1.0, 1.0000000200408773e+20]

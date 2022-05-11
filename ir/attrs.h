@@ -25,11 +25,12 @@ public:
 
   uint64_t derefBytes = 0;       // Dereferenceable
   uint64_t derefOrNullBytes = 0; // DereferenceableOrNull
-  unsigned blockSize = 0;        // exact block size for e.g. byval args
-  unsigned align = 1;
+  uint64_t blockSize = 0;        // exact block size for e.g. byval args
+  uint64_t align = 1;
 
   bool has(Attribute a) const { return (bits & a) != 0; }
   void set(Attribute a) { bits |= (unsigned)a; }
+  bool refinedBy(const ParamAttrs &other) const;
 
   // Returns true if it's UB for the argument to be poison / have a poison elem.
   bool poisonImpliesUB() const;
@@ -56,7 +57,8 @@ public:
                    Dereferenceable = 1 << 5, NonNull = 1 << 6,
                    NoFree = 1 << 7, NoUndef = 1 << 8, Align = 1 << 9,
                    NoThrow = 1 << 10, NoAlias = 1 << 11, WillReturn = 1 << 12,
-                   DereferenceableOrNull = 1 << 13 };
+                   DereferenceableOrNull = 1 << 13,
+                   InaccessibleMemOnly = 1 << 14 };
 
   FnAttrs(unsigned bits = None) : bits(bits) {}
 
@@ -93,6 +95,27 @@ struct FastMathFlags final {
   bool isNNan() const { return flags & NNaN; }
   bool isNInf() const {return flags & NInf;}
   friend std::ostream& operator<<(std::ostream &os, const FastMathFlags &fm);
+};
+
+
+struct FpRoundingMode final {
+  enum Mode { RNE, RNA, RTP, RTN, RTZ, Dynamic, Default } mode;
+  FpRoundingMode() : mode(Default) {}
+  FpRoundingMode(Mode mode) : mode(mode) {}
+  bool isDynamic() const { return mode == Dynamic; }
+  bool isDefault() const { return mode == Default; }
+  Mode getMode() const { return mode; }
+  smt::expr toSMT() const;
+  friend std::ostream& operator<<(std::ostream &os, FpRoundingMode rounding);
+};
+
+
+struct FpExceptionMode final {
+  enum Mode { Ignore, MayTrap, Strict } mode;
+  FpExceptionMode() : mode(Ignore) {}
+  FpExceptionMode(Mode mode) : mode(mode) {}
+  Mode getMode() const { return mode; }
+  friend std::ostream& operator<<(std::ostream &os, FpExceptionMode ex);
 };
 
 }

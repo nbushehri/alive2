@@ -60,3 +60,5 @@ for.end:                                          ; preds = %for.body
 @a = common global i32 0, align 4
 @.str = private unnamed_addr constant [15 x i8] c"checksum = %X\0A\00", align 1
 declare i32 @print(i8*, ...)
+; XFAIL: call with escaped locals
+; SKIP-IDENTITY

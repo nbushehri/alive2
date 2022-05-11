@@ -22,3 +22,6 @@ end:
 }
 
 declare void @fn()
+
+; SKIP-IDENTITY
+; XFAIL: Source is more defined

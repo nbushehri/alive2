@@ -1,5 +1,3 @@
-; FIXME: In order to detect this bug, a function call should be able to update escaped local blocks
-
 target datalayout = "e-p:32:32"
 @str = constant [3 x i8] undef
 @str2 = constant [4 x i8] undef
@@ -40,3 +38,7 @@ return:
 
 declare void @myscanf(i8*, ...)
 declare void @myprintf(i8*, ...)
+
+; SKIP-IDENTITY
+; ERROR: Source is more defined than target
+; XFAIL: call with escaped locals

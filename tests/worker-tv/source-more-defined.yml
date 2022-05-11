@@ -1,0 +1,133 @@
+---
+name: unsound_i32
+func: alive.tv_v2
+args:
+  - disable_undef_input: true
+    disable_poison_input: true
+  - !ir 'define i32 @f(i32 %x, i32 %y) { ret i32 %x }'
+  - !ir 'define i32 @f(i32 %x, i32 %y) { udiv i32 1, %x ret i32 %x }'
+expected:
+  test_input:
+    args: [0, 0]
+  status: unsound
+  valid: false
+  errs: "ERROR: Source is more defined than target\n"
+---
+name: unsound_i128
+func: alive.tv_v2
+args:
+  - disable_undef_input: true
+    disable_poison_input: true
+  - !ir |
+    define void @f(i128 %x) {
+      ret void
+    }
+  - !ir |
+    define void @f(i128 %x) {
+      %y = xor i128 %x, 88962710306127702866241727433142015
+      udiv i128 1, %y
+      ret void
+    }
+expected:
+  test_input:
+    args: [!!binary ESIzRFVmd4iZqrvM3e7/]
+  status: unsound
+  valid: false
+  errs: "ERROR: Source is more defined than target\n"
+---
+name: unsound_poison
+func: alive.tv_v2
+args:
+  - disable_undef_input: true
+    disable_poison_input: false
+  - !ir |
+    define void @f(i32 %x) {
+      ret void
+    }
+  - !ir |
+    define void @f(i32 %x) {
+      %y = or i32 %x, 1
+      udiv i32 1, %y
+      ret void
+    }
+expected:
+  test_input:
+    args: [poison]
+  status: unsound
+  valid: false
+  errs: "ERROR: Source is more defined than target\n"
+---
+name: unsound_vector
+func: alive.tv_v2
+args:
+  - disable_undef_input: true
+    disable_poison_input: true
+  - !ir |
+    define <2 x i32> @f(<2 x i32> %x) {
+      ret <2 x i32> %x
+    }
+  - !ir |
+    define <2 x i32> @f(<2 x i32> %x) {
+      %y = or <2 x i32> %x, <i32 0, i32 1>
+      udiv <2 x i32> <i32 1, i32 1>, %y
+      ret <2 x i32> %x
+    }
+expected:
+  test_input:
+    args: [[0, 0]]
+  status: unsound
+  valid: false
+  errs: "ERROR: Source is more defined than target\n"
+---
+name: unsound_fp128_bitcast
+func: alive.tv_v2
+args:
+  - disable_undef_input: true
+    disable_poison_input: true
+  - !ir |
+    define void @f(fp128 %x) {
+      ret void
+    }
+  - !ir |
+    define void @f(fp128 %x) {
+      %y = bitcast fp128 %x to i128
+      %z = xor i128 %y, 85073555474209096226415955104694206904
+      udiv i128 1, %z
+      ret void
+    }
+expected:
+  test_input:
+    args: [!!binary QACSH7VEQtGEaYmMxRcBuA==]
+  status: unsound
+  valid: false
+  errs: "ERROR: Source is more defined than target\n"
+---
+name: unsound_pointer
+func: alive.tv_v2
+args:
+  - disable_undef_input: true
+    disable_poison_input: true
+  - !ir |
+    define void @src(i8* dereferenceable(1) %x) {
+      load i8, i8* %x
+      ret void
+    }
+  - !ir |
+    define void @tgt(i8* dereferenceable(1) %x) {
+      %y = getelementptr i8, i8* %x, i32 -1
+      load i8, i8* %y
+      ret void
+    }
+expected:
+  test_input:
+    args: [[1, 0]]
+    memory:
+      - size: 0
+        align: 0
+      - size: 34359738368
+        align: 32
+        bytes:
+          - [null, 0, 0]
+  status: unsound
+  valid: false
+  errs: "ERROR: Source is more defined than target\n"

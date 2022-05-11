@@ -13,6 +13,8 @@
 #include "util/stopwatch.h"
 #include "util/symexec.h"
 #include <algorithm>
+#include <bit>
+#include <climits>
 #include <iostream>
 #include <map>
 #include <numeric>
@@ -38,6 +40,11 @@ static bool is_arbitrary(const expr &e) {
 static void print_single_varval(ostream &os, const State &st, const Model &m,
                                 const Value *var, const Type &type,
                                 const StateValue &val, unsigned child) {
+  if (dynamic_cast<const VoidType*>(&type)) {
+    os << "void";
+    return;
+  }
+
   if (!val.isValid()) {
     os << "(invalid expr)";
     return;
@@ -82,9 +89,9 @@ static void print_single_varval(ostream &os, const State &st, const Model &m,
   }
 }
 
-static void print_varval(ostream &os, const State &st, const Model &m,
-                         const Value *var, const Type &type,
-                         const StateValue &val, unsigned child = 0) {
+void tools::print_model_val(ostream &os, const State &st, const Model &m,
+                            const Value *var, const Type &type,
+                            const StateValue &val, unsigned child) {
   if (!type.isAggregateType()) {
     print_single_varval(os, st, m, var, type, val, child);
     return;
@@ -95,19 +102,16 @@ static void print_varval(ostream &os, const State &st, const Model &m,
   for (unsigned i = 0, e = agg->numElementsConst(); i < e; ++i) {
     if (i != 0)
       os << ", ";
-    print_varval(os, st, m, var, agg->getChild(i), agg->extract(val, i),
-                 child + i);
+    tools::print_model_val(os, st, m, var, agg->getChild(i),
+                           agg->extract(val, i), child + i);
   }
   os << (type.isStructType() ? " }" : " >");
 }
 
-
 using print_var_val_ty = function<void(ostream&, const Model&)>;
 
-static bool error(Errors &errs, const State &src_state, const State &tgt_state,
-                  const Result &r, const Value *var,
-                  const char *msg, bool check_each_var,
-                  print_var_val_ty print_var_val) {
+bool Errors::addSolverError(const Result &r) {
+  Errors &errs = *this;
 
   if (r.isInvalid()) {
     errs.add("Invalid expr", false);
@@ -129,9 +133,17 @@ static bool error(Errors &errs, const State &src_state, const State &tgt_state,
     return true;
   }
 
+  UNREACHABLE();
+}
+
+static bool error(Errors &errs, const State &src_state, const State &tgt_state,
+                  const Result &r, const Value *var,
+                  const char *msg, bool check_each_var,
+                  print_var_val_ty print_var_val) {
+  if (!r.isSat())
+    return errs.addSolverError(r);
+
   stringstream s;
-  string empty;
-  auto &var_name = var ? var->getName() : empty;
   auto &m = r.getModel();
 
   {
@@ -147,17 +159,26 @@ static bool error(Errors &errs, const State &src_state, const State &tgt_state,
     }
 
     if (!approx.empty()) {
-      s << "Couldn't prove the correctness of the transformation\n"
-          "Alive2 approximated the semantics of the programs and therefore we\n"
-          "cannot conclude whether the bug found is valid or not.\n\n"
-          "Approximations done:\n";
       for (auto &msg : approx) {
         s << " - " << msg << '\n';
       }
-      errs.add(s.str(), false);
-      return false;
+      return errs.addSolverSatApprox(s.str());
     }
   }
+
+  print_var_val(s, m);
+  return errs.addSolverSat(src_state, tgt_state, r, var, msg, check_each_var,
+                           s.str());
+}
+
+bool Errors::addSolverSat(const IR::State &src_state,
+                          const IR::State &tgt_state, const smt::Result &r,
+                          const IR::Value *var, const std::string &msg,
+                          bool check_each_var, const std::string &post_msg) {
+  stringstream s;
+  string empty;
+  auto &var_name = var ? var->getName() : empty;
+  auto &m = r.getModel();
 
   s << msg;
   if (!var_name.empty())
@@ -169,7 +190,7 @@ static bool error(Errors &errs, const State &src_state, const State &tgt_state,
         !dynamic_cast<const ConstantInput*>(var))
       continue;
     s << *var << " = ";
-    print_varval(s, src_state, m, var, var->getType(), val.first);
+    print_model_val(s, src_state, m, var, var->getType(), val.val);
     s << '\n';
   }
 
@@ -183,27 +204,57 @@ static bool error(Errors &errs, const State &src_state, const State &tgt_state,
       }
     }
 
+    auto *bb = &st->getFn().getFirstBB();
+
     for (auto &[var, val] : st->getValues()) {
       auto &name = var->getName();
       if (name == var_name)
         break;
 
-      if (name[0] != '%' ||
-          dynamic_cast<const Input*>(var) ||
+      auto *i = dynamic_cast<const Instr*>(var);
+      if (!i || &st->getFn().bbOf(*i) != bb ||
           (check_each_var && !seen_vars.insert(name).second))
         continue;
 
+      if (auto *jmp = dynamic_cast<const JumpInstr*>(var)) {
+        bool jumped = false;
+        for (auto &dst : jmp->targets()) {
+          const expr &cond = st->getJumpCond(*bb, dst);
+          if ((jumped = !m.eval(cond).isFalse())) {
+            s << "  >> Jump to " << dst.getName() << '\n';
+            bb = &dst;
+            break;
+          }
+        }
+
+        if (jumped) {
+          continue;
+        } else {
+          s << "UB triggered on " << name << '\n';
+          break;
+        }
+      }
+
+      if (!dynamic_cast<const Return*>(var) && // domain always false after exec
+          !m.eval(val.domain).isTrue()) {
+        s << *var << " = UB triggered!\n";
+        break;
+      }
+
+      if (name[0] != '%')
+        continue;
+
       s << *var << " = ";
-      print_varval(s, const_cast<State&>(*st), m, var, var->getType(),
-                   val.first);
+      print_model_val(s, const_cast<State&>(*st), m, var, var->getType(),
+                      val.val);
       s << '\n';
     }
 
     st->getMemory().print(s, m);
   }
 
-  print_var_val(s, m);
-  errs.add(s.str(), true);
+  s << post_msg;
+  add(s.str(), true);
   return false;
 }
 
@@ -244,7 +295,7 @@ static void instantiate_undef(const Input *in, map<expr, expr> &instances,
     for (unsigned i = 0; i < 2; ++i) {
       expr newexpr = e.subst(var, nums[i]);
       if (newexpr.eq(e)) {
-        instances2[move(newexpr)] = move(v);
+        instances2[std::move(newexpr)] = std::move(v);
         break;
       }
 
@@ -253,16 +304,16 @@ static void instantiate_undef(const Input *in, map<expr, expr> &instances,
         continue;
 
       // keep 'var' variables for counterexample printing
-      instances2.try_emplace(move(newexpr), v && var == nums[i]);
+      instances2.try_emplace(std::move(newexpr), v && var == nums[i]);
     }
   }
-  instances = move(instances2);
+  instances = std::move(instances2);
 }
 
 static expr preprocess(const Transform &t, const set<expr> &qvars0,
                        const set<expr> &undef_qvars, expr &&e) {
   if (hit_half_memory_limit())
-    return expr::mkForAll(qvars0, move(e));
+    return expr::mkForAll(qvars0, std::move(e));
 
   // eliminate all quantified boolean vars; Z3 gets too slow with those
   auto qvars = qvars0;
@@ -286,10 +337,10 @@ static expr preprocess(const Transform &t, const set<expr> &qvars0,
 
   if (config::disable_undef_input || undef_qvars.empty() ||
       hit_half_memory_limit())
-    return expr::mkForAll(qvars, move(e));
+    return expr::mkForAll(qvars, std::move(e));
 
   // manually instantiate undef masks
-  map<expr, expr> instances({ { move(e), true } });
+  map<expr, expr> instances({ { std::move(e), true } });
 
   for (auto &i : t.src.getInputs()) {
     if (auto in = dynamic_cast<const Input*>(&i))
@@ -298,7 +349,7 @@ static expr preprocess(const Transform &t, const set<expr> &qvars0,
 
   expr insts(false);
   for (auto &[e, v] : instances) {
-    insts |= expr::mkForAll(qvars, move(const_cast<expr&>(e))) && v;
+    insts |= expr::mkForAll(qvars, std::move(const_cast<expr&>(e))) && v;
   }
   return insts;
 }
@@ -311,8 +362,8 @@ encode_undef_refinement_per_elem(const Type &ty, const StateValue &sva,
   if (!aty)
     return sva.non_poison && sva.value == a2 && b != b2;
 
-  StateValue sva2{move(a2), expr()};
-  StateValue svb{move(b), expr()}, svb2{move(b2), expr()};
+  StateValue sva2{std::move(a2), expr()};
+  StateValue svb{std::move(b), expr()}, svb2{std::move(b2), expr()};
   expr result = false;
 
   for (unsigned i = 0; i < aty->numElementsConst(); ++i) {
@@ -336,47 +387,49 @@ static expr encode_undef_refinement(const Type &type, const State::ValTy &a,
 
   if (dynamic_cast<const VoidType *>(&type))
     return false;
-  if (b.second.empty())
+  if (b.undef_vars.empty())
     // target is never undef
     return false;
 
   auto subst = [](const auto &val) {
     vector<pair<expr, expr>> repls;
-    for (auto &v : val.second) {
+    for (auto &v : val.undef_vars) {
       repls.emplace_back(v, expr::some(v));
     }
-    return val.first.value.subst(repls);
+    return val.val.value.subst(repls);
   };
 
-  return encode_undef_refinement_per_elem(type, a.first, subst(a),
-                                          expr(b.first.value), subst(b));
+  return encode_undef_refinement_per_elem(type, a.val, subst(a),
+                                          expr(b.val.value), subst(b));
 }
 
 static void
 check_refinement(Errors &errs, const Transform &t, const State &src_state,
                  const State &tgt_state, const Value *var, const Type &type,
-                 const expr &dom_a, const expr &fndom_a, const State::ValTy &ap,
-                 const expr &dom_b, const expr &fndom_b, const State::ValTy &bp,
+                 const expr &fndom_a, const State::ValTy &ap,
+                 const expr &fndom_b, const State::ValTy &bp,
                  bool check_each_var) {
-  if (src_state.sinkDomain().isTrue()) {
+  if (check_expr(!src_state.sinkDomain()).isUnsat()) {
     errs.add("The source program doesn't reach a return instruction.\n"
              "Consider increasing the unroll factor if it has loops", false);
     return;
   }
 
   auto sink_tgt = tgt_state.sinkDomain();
-  if (sink_tgt.isTrue()) {
+  if (check_expr(!sink_tgt).isUnsat()) {
     errs.add("The target program doesn't reach a return instruction.\n"
              "Consider increasing the unroll factor if it has loops", false);
     return;
   }
 
-  auto &a = ap.first;
-  auto &b = bp.first;
+  auto &dom_a = ap.domain;
+  auto &dom_b = bp.domain;
+  auto &a = ap.val;
+  auto &b = bp.val;
 
-  auto &uvars = ap.second;
+  auto &uvars = ap.undef_vars;
   auto qvars = src_state.getQuantVars();
-  qvars.insert(ap.second.begin(), ap.second.end());
+  qvars.insert(ap.undef_vars.begin(), ap.undef_vars.end());
   auto &fn_qvars = tgt_state.getFnQuantVars();
   qvars.insert(fn_qvars.begin(), fn_qvars.end());
 
@@ -426,14 +479,14 @@ check_refinement(Errors &errs, const Transform &t, const State &src_state,
     // \forall v . (pre_tgt && !pre_src(v)) ->  [\exists v . pre_src(v)]
     // false
     if (refines.isFalse())
-      return move(refines);
+      return std::move(refines);
 
     return axioms_expr &&
             preprocess(t, qvars, uvars, pre && pre_src_forall.implies(refines));
   };
 
-  auto check = [&](expr &&e, auto &&printer, const char *msg) -> bool{
-    e = mk_fml(move(e));
+  auto check = [&](expr &&e, auto &&printer, const char *msg) {
+    e = mk_fml(std::move(e));
     auto res = check_expr(e);
     if (!res.isUnsat() &&
         !error(errs, src_state, tgt_state, res, var, msg, check_each_var,
@@ -459,7 +512,7 @@ check_refinement(Errors &errs, const Transform &t, const State &src_state,
       dom_constr = (fndom_a && fndom_b) && dom_a != dom_b;
     }
 
-    CHECK(move(dom_constr),
+    CHECK(std::move(dom_constr),
           [](ostream&, const Model&){},
           "Source and target don't have the same return domain");
   }
@@ -467,9 +520,9 @@ check_refinement(Errors &errs, const Transform &t, const State &src_state,
   // 3. Check poison
   auto print_value = [&](ostream &s, const Model &m) {
     s << "Source value: ";
-    print_varval(s, src_state, m, var, type, a);
+    print_model_val(s, src_state, m, var, type, a);
     s << "\nTarget value: ";
-    print_varval(s, tgt_state, m, var, type, b);
+    print_model_val(s, tgt_state, m, var, type, b);
   };
 
   auto [poison_cnstr, value_cnstr] = type.refines(src_state, tgt_state, a, b);
@@ -497,8 +550,8 @@ check_refinement(Errors &errs, const Transform &t, const State &src_state,
     set<expr> undef;
     Pointer p(src_mem, m[ptr_refinement()]);
     s << "\nMismatch in " << p
-      << "\nSource value: " << Byte(src_mem, m[src_mem.load(p, undef)()])
-      << "\nTarget value: " << Byte(tgt_mem, m[tgt_mem.load(p, undef)()]);
+      << "\nSource value: " << Byte(src_mem, m[src_mem.raw_load(p, undef)()])
+      << "\nTarget value: " << Byte(tgt_mem, m[tgt_mem.raw_load(p, undef)()]);
   };
 
   CHECK(dom && !(memory_cnstr0.isTrue() ? memory_cnstr0
@@ -532,10 +585,13 @@ static unsigned num_ptrs(const Type &ty) {
 }
 
 static bool returns_local(const Value &v) {
+  // no alias fns return local block
+  if (auto call = dynamic_cast<const FnCall*>(&v))
+    return call->getAttributes().has(FnAttrs::NoAlias);
+
   return dynamic_cast<const Alloc*>(&v) ||
          dynamic_cast<const Malloc*>(&v) ||
          dynamic_cast<const Calloc*>(&v);
-         // TODO: add noalias fn
 }
 
 static Value *get_base_ptr(Value *ptr) {
@@ -709,6 +765,12 @@ static void initBitsProgramPointer(Transform &t) {
   assert(bits_program_pointer == t.tgt.bitsPointers());
 }
 
+static uint64_t aligned_alloc_size(uint64_t size, unsigned align) {
+  if (size <= align)
+    return align;
+  return add_saturate(size, align - 1);
+}
+
 static void calculateAndInitConstants(Transform &t) {
   if (!bits_program_pointer)
     initBitsProgramPointer(t);
@@ -717,15 +779,18 @@ static void calculateAndInitConstants(Transform &t) {
   const auto &globals_src = t.src.getGlobalVars();
   num_globals_src = globals_src.size();
   unsigned num_globals = num_globals_src;
+  uint64_t glb_alloc_aligned_size = 0;
 
   heap_block_alignment = 8;
 
   num_consts_src = 0;
-  num_extra_nonconst_tgt = 0;
 
   for (auto GV : globals_src) {
     if (GV->isConst())
       ++num_consts_src;
+    glb_alloc_aligned_size
+      = add_saturate(glb_alloc_aligned_size,
+                     aligned_alloc_size(GV->size(), GV->getAlignment()));
   }
 
   for (auto GVT : globals_tgt) {
@@ -733,20 +798,25 @@ static void calculateAndInitConstants(Transform &t) {
       [GVT](auto *GV) -> bool { return GVT->getName() == GV->getName(); });
     if (I == globals_src.end()) {
       ++num_globals;
-      if (!GVT->isConst())
-        ++num_extra_nonconst_tgt;
     }
+    glb_alloc_aligned_size
+      = add_saturate(glb_alloc_aligned_size,
+                     aligned_alloc_size(GVT->size(), GVT->getAlignment()));
   }
 
   num_ptrinputs = 0;
+  unsigned num_null_ptrinputs = 0;
   for (auto &arg : t.src.getInputs()) {
     auto n = num_ptrs(arg.getType());
     auto in = dynamic_cast<const Input*>(&arg);
     if (in && in->hasAttribute(ParamAttrs::ByVal)) {
       num_globals_src += n;
       num_globals += n;
-    } else
+    } else {
       num_ptrinputs += n;
+      if (!in || !in->hasAttribute(ParamAttrs::NonNull))
+        num_null_ptrinputs += n;
+    }
   }
 
   // The number of local blocks.
@@ -754,33 +824,42 @@ static void calculateAndInitConstants(Transform &t) {
   num_locals_tgt = 0;
   uint64_t max_gep_src = 0, max_gep_tgt = 0;
   uint64_t max_alloc_size = 0;
-  uint64_t max_aligned_size = 0;
   uint64_t max_access_size = 0;
   uint64_t min_global_size = UINT64_MAX;
 
   bool nullptr_is_used = false;
-  has_int2ptr      = false;
-  has_ptr2int      = false;
+  bool has_int2ptr     = false;
+  bool has_ptr2int     = false;
   has_alloca       = false;
   has_dead_allocas = false;
   has_malloc       = false;
   has_free         = false;
   has_fncall       = false;
+  has_write_fncall = false;
   has_null_block   = false;
   does_ptr_store   = false;
   does_ptr_mem_access = false;
   does_int_mem_access = false;
+  observes_addresses  = false;
   bool does_any_byte_access = false;
+
+  set<string> inaccessiblememonly_fns;
+  num_inaccessiblememonly_fns = 0;
 
   // Mininum access size (in bytes)
   uint64_t min_access_size = 8;
+  uint64_t loc_src_alloc_aligned_size = 0;
+  uint64_t loc_tgt_alloc_aligned_size = 0;
   unsigned min_vect_elem_sz = 0;
   bool does_mem_access = false;
   bool has_ptr_load = false;
 
   for (auto fn : { &t.src, &t.tgt }) {
-    unsigned &cur_num_locals = fn == &t.src ? num_locals_src : num_locals_tgt;
-    uint64_t &cur_max_gep    = fn == &t.src ? max_gep_src : max_gep_tgt;
+    bool is_src = fn == &t.src;
+    unsigned &cur_num_locals = is_src ? num_locals_src : num_locals_tgt;
+    uint64_t &cur_max_gep    = is_src ? max_gep_src : max_gep_tgt;
+    uint64_t &loc_alloc_aligned_size
+      = is_src ? loc_src_alloc_aligned_size : loc_tgt_alloc_aligned_size;
 
     for (auto &v : fn->getInputs()) {
       auto *i = dynamic_cast<const Input *>(&v);
@@ -831,13 +910,21 @@ static void calculateAndInitConstants(Transform &t) {
 
       update_min_vect_sz(i.getType());
 
-      if (dynamic_cast<const FnCall*>(&i))
+      if (auto fn = dynamic_cast<const FnCall*>(&i)) {
         has_fncall |= true;
+        if (fn->hasAttribute(FnAttrs::InaccessibleMemOnly)) {
+          if (inaccessiblememonly_fns.emplace(fn->getName()).second)
+            ++num_inaccessiblememonly_fns;
+        } else {
+          has_write_fncall |= !fn->hasAttribute(FnAttrs::NoWrite);
+        }
+      }
 
       if (auto *mi = dynamic_cast<const MemInstr *>(&i)) {
         auto [alloc, align] = mi->getMaxAllocSize();
-        max_alloc_size   = max(max_alloc_size, alloc);
-        max_aligned_size = max(max_aligned_size, add_saturate(alloc, align-1));
+        max_alloc_size     = max(max_alloc_size, alloc);
+        loc_alloc_aligned_size = add_saturate(loc_alloc_aligned_size,
+                                              aligned_alloc_size(alloc, align));
         max_access_size  = max(max_access_size, mi->getMaxAccessSize());
         cur_max_gep      = add_saturate(cur_max_gep, mi->getMaxGEPOffset());
         has_free        |= mi->canFree();
@@ -847,6 +934,7 @@ static void calculateAndInitConstants(Transform &t) {
         does_ptr_store       |= info.doesPtrStore;
         does_int_mem_access  |= info.hasIntByteAccess;
         does_mem_access      |= info.doesMemAccess();
+        observes_addresses   |= info.observesAddresses;
         min_access_size       = gcd(min_access_size, info.byteSize);
         if (info.doesMemAccess() && !info.hasIntByteAccess &&
             !info.doesPtrLoad && !info.doesPtrStore)
@@ -862,7 +950,7 @@ static void calculateAndInitConstants(Transform &t) {
 
       } else if (isCast(ConversionOp::Int2Ptr, i) ||
                   isCast(ConversionOp::Ptr2Int, i)) {
-        max_alloc_size = max_access_size = cur_max_gep = max_aligned_size
+        max_alloc_size = max_access_size = cur_max_gep = loc_alloc_aligned_size
           = UINT64_MAX;
         has_int2ptr |= isCast(ConversionOp::Int2Ptr, i) != nullptr;
         has_ptr2int |= isCast(ConversionOp::Ptr2Int, i) != nullptr;
@@ -872,8 +960,8 @@ static void calculateAndInitConstants(Transform &t) {
         min_access_size = gcd(min_access_size, getCommonAccessSize(t));
 
       } else if (auto *ic = dynamic_cast<const ICmp*>(&i)) {
-        has_ptr2int |= ic->isPtrCmp() &&
-                       (ic->getPtrCmpMode() == ICmp::INTEGRAL);
+        observes_addresses |= ic->isPtrCmp() &&
+                              ic->getPtrCmpMode() == ICmp::INTEGRAL;
       }
     }
   }
@@ -903,16 +991,18 @@ static void calculateAndInitConstants(Transform &t) {
 
   // check if null block is needed
   // Global variables cannot be null pointers
-  has_null_block = num_ptrinputs > 0 || nullptr_is_used || has_malloc ||
+  has_null_block = num_null_ptrinputs > 0 || nullptr_is_used || has_malloc ||
                   has_ptr_load || has_fncall || has_int2ptr;
 
   num_nonlocals_src = num_globals_src + num_ptrinputs + num_nonlocals_inst_src +
-                      has_null_block;
+                      num_inaccessiblememonly_fns + has_null_block;
 
   // Allow at least one non-const global for calls to change
-  num_nonlocals_src += has_fncall;
+  num_nonlocals_src += has_write_fncall;
 
   num_nonlocals = num_nonlocals_src + num_globals - num_globals_src;
+
+  observes_addresses |= has_int2ptr || has_ptr2int;
 
   if (!does_int_mem_access && !does_ptr_mem_access && has_fncall)
     does_int_mem_access = true;
@@ -942,8 +1032,8 @@ static void calculateAndInitConstants(Transform &t) {
   // counterexamples more readable
   // Allow an extra bit for the sign
   auto max_geps
-    = ilog2_ceil(add_saturate(max(max_gep_src, max_gep_tgt), max_access_size),
-                 true) + 1;
+    = bit_width(add_saturate(max(max_gep_src, max_gep_tgt), max_access_size))
+        + 1;
   bits_for_offset = min(round_up(max_geps, 4), (uint64_t)t.src.bitsPtrOffset());
   bits_for_offset = min(bits_for_offset, config::max_offset_bits);
   bits_for_offset = min(bits_for_offset, bits_program_pointer);
@@ -951,11 +1041,15 @@ static void calculateAndInitConstants(Transform &t) {
   // ASSUMPTION: programs can only allocate up to half of address space
   // so the first bit of size is always zero.
   // We need this assumption to support negative offsets.
-  bits_size_t = ilog2_ceil(max_alloc_size, true);
+  bits_size_t = bit_width(max_alloc_size);
   bits_size_t = min(max(bits_for_offset, bits_size_t), bits_program_pointer-1);
 
   // +1 because the pointer after the object must be valid (can't overflow)
-  bits_ptr_address = ilog2_ceil(add_saturate(max_aligned_size, 1), true);
+  uint64_t loc_alloc_aligned_size
+    = max(loc_src_alloc_aligned_size, loc_tgt_alloc_aligned_size);
+  bits_ptr_address
+    = add_saturate(
+        bit_width(max(glb_alloc_aligned_size, loc_alloc_aligned_size)), 1);
 
   // as an (unsound) optimization, we fix the first bit of the addr for
   // local/non-local if both exist (to reduce axiom fml size)
@@ -963,7 +1057,14 @@ static void calculateAndInitConstants(Transform &t) {
   bits_ptr_address = min(max(bits_size_t, bits_ptr_address + has_local_bit),
                          bits_program_pointer);
 
-  bits_byte = 8 * (does_mem_access ?  (unsigned)min_access_size : 1);
+  if (false) {
+    // FIXME: make the interpreter support bits_byte > 8, so we can go back to
+    // this original, more efficient code. The tricky part is handling default
+    // values for memory blocks, which could consist of multiple bytes.
+    bits_byte = 8 * (does_mem_access ?  (unsigned)min_access_size : 1);
+  } else {
+    bits_byte = 8;
+  }
 
   bits_poison_per_byte = 1;
   if (min_vect_elem_sz > 0)
@@ -980,13 +1081,16 @@ static void calculateAndInitConstants(Transform &t) {
                   << "\nnum_locals_tgt: " << num_locals_tgt
                   << "\nnum_nonlocals_src: " << num_nonlocals_src
                   << "\nnum_nonlocals: " << num_nonlocals
+                  << "\nnum_inaccessiblememonly_fns: "
+                    << num_inaccessiblememonly_fns
                   << "\nbits_for_bid: " << bits_for_bid
                   << "\nbits_for_offset: " << bits_for_offset
                   << "\nbits_size_t: " << bits_size_t
                   << "\nbits_ptr_address: " << bits_ptr_address
                   << "\nbits_program_pointer: " << bits_program_pointer
                   << "\nmax_alloc_size: " << max_alloc_size
-                  << "\nmax_aligned_size: " << max_aligned_size
+                  << "\nglb_alloc_aligned_size: " << glb_alloc_aligned_size
+                  << "\nloc_alloc_aligned_size: " << loc_alloc_aligned_size
                   << "\nmin_access_size: " << min_access_size
                   << "\nmax_access_size: " << max_access_size
                   << "\nbits_byte: " << bits_byte
@@ -995,8 +1099,7 @@ static void calculateAndInitConstants(Transform &t) {
                   << "\nmemcmp_unroll_cnt: " << memcmp_unroll_cnt
                   << "\nlittle_endian: " << little_endian
                   << "\nnullptr_is_used: " << nullptr_is_used
-                  << "\nhas_int2ptr: " << has_int2ptr
-                  << "\nhas_ptr2int: " << has_ptr2int
+                  << "\nobserves_addresses: " << observes_addresses
                   << "\nhas_malloc: " << has_malloc
                   << "\nhas_free: " << has_free
                   << "\nhas_null_block: " << has_null_block
@@ -1036,13 +1139,40 @@ pair<unique_ptr<State>, unique_ptr<State>> TransformVerify::exec() const {
   sym_exec(*tgt_state);
   src_state->mkAxioms(*tgt_state);
 
-  return { move(src_state), move(tgt_state) };
+  return { std::move(src_state), std::move(tgt_state) };
 }
 
-Errors TransformVerify::verify() const {
-  if (!t.src.hasSameInputs(t.tgt)) {
-    return { "Unsupported interprocedural transformation: signature mismatch "
-             "between src and tgt", false };
+void TransformVerify::verify(Errors &errs) const {
+  {
+    auto src_inputs = t.src.getInputs();
+    auto tgt_inputs = t.tgt.getInputs();
+    auto litr = src_inputs.begin(), lend = src_inputs.end();
+    auto ritr = tgt_inputs.begin(), rend = tgt_inputs.end();
+
+    while (litr != lend && ritr != rend) {
+      auto *lv = dynamic_cast<const Input*>(&*litr);
+      auto *rv = dynamic_cast<const Input*>(&*ritr);
+      if (lv->getType().toString() != rv->getType().toString()) {
+          errs.add("Signature mismatch between src and tgt", false);
+          return;
+        }
+
+      if (!lv->getAttributes().refinedBy(rv->getAttributes())) {
+        errs.add("Parameter attributes not refined", true);
+        return;
+      }
+        
+
+      ++litr;
+      ++ritr;
+    }
+
+    if (litr != lend || ritr != rend) {
+      errs.add("Signature mismatch between src and tgt", false);
+      return;
+    }
+    
+      
   }
 
   // Check sizes of global variables
@@ -1061,21 +1191,37 @@ Errors TransformVerify::verify() const {
          << GVS->getName() << " has different size in source and target ("
          << GVS->size() << " vs " << GVT->size()
          << " bytes)";
-      return { ss.str(), false };
+      errs.add(ss.str(), false);
+      return;
     } else if (GVS->isConst() && !GVT->isConst()) {
       stringstream ss;
       ss << "Transformation is incorrect because global variable "
          << GVS->getName() << " is const in source but not in target";
-      return { ss.str(), true };
+      errs.add(ss.str(), true);
+      return;
     } else if (!GVS->isConst() && GVT->isConst()) {
       stringstream ss;
       ss << "Unsupported interprocedural transformation: global variable "
          << GVS->getName() << " is const in target but not in source";
-      return { ss.str(), false };
+      errs.add(ss.str(), false);
+      return;
+    }
+  }
+  for (auto GVT : globals_tgt) {
+    auto I = find_if(globals_src.begin(), globals_src.end(),
+      [GVT](auto *GV) -> bool { return GVT->getName() == GV->getName(); });
+    if (I != globals_src.end())
+      continue;
+
+    if (!GVT->isConst()) {
+        string s = "Unsupported interprocedural transformation: non-constant "
+                   "global variable " + GVT->getName() + " is introduced in"
+                   " target";
+        errs.add(move(s), false);
+        return;
     }
   }
 
-  Errors errs;
   try {
     auto [src_state, tgt_state] = exec();
 
@@ -1085,26 +1231,22 @@ Errors TransformVerify::verify() const {
         if (name[0] != '%' || !dynamic_cast<const Instr*>(var))
           continue;
 
-        // TODO: add data-flow domain tracking for Alive, but not for TV
+        auto &val_tgt = tgt_state->at(*tgt_instrs.at(name));
         check_refinement(errs, t, *src_state, *tgt_state, var, var->getType(),
-                         true, true, val,
-                         true, true, tgt_state->at(*tgt_instrs.at(name)),
+                         val.domain, val, val_tgt.domain, val_tgt,
                          check_each_var);
         if (errs)
-          return errs;
+          return;
       }
     }
 
     check_refinement(errs, t, *src_state, *tgt_state, nullptr, t.src.getType(),
-                     src_state->returnDomain()(), src_state->functionDomain()(),
-                     src_state->returnVal(),
-                     tgt_state->returnDomain()(), tgt_state->functionDomain()(),
-                     tgt_state->returnVal(),
+                     src_state->functionDomain()(), src_state->returnVal(),
+                     tgt_state->functionDomain()(), tgt_state->returnVal(),
                      check_each_var);
   } catch (AliveException e) {
-    return move(e);
+    errs.add(move(e));
   }
-  return errs;
 }
 
 
@@ -1149,7 +1291,7 @@ TypingAssignments TransformVerify::getTypings() const {
         c &= i.getType() == tgt_instrs.at(i.getName())->getType();
     }
   }
-  return { move(c) };
+  return { std::move(c) };
 }
 
 void TransformVerify::fixupTypes(const TypingAssignments &ty) {
@@ -1278,7 +1420,8 @@ static void optimize_ptrcmp(Function &f) {
     if (auto *gep = dynamic_cast<const GEP*>(&v))
       return gep->isInBounds();
 
-    return returns_local(v);
+    // noalias functions aren't required to return an inbounds ptr
+    return returns_local(v) && !dynamic_cast<const FnCall*>(&v);
   };
 
   for (auto &i : f.instrs()) {
@@ -1288,6 +1431,8 @@ static void optimize_ptrcmp(Function &f) {
 
     auto cond = icmp->getCond();
     bool is_eq = cond == ICmp::EQ || cond == ICmp::NE;
+    bool is_signed_cmp = cond == ICmp::SLE || cond == ICmp::SLT ||
+                         cond == ICmp::SGE || cond == ICmp::SGT;
 
     auto ops = icmp->operands();
     auto *op0 = ops[0];
@@ -1304,7 +1449,10 @@ static void optimize_ptrcmp(Function &f) {
     if (base0 && base0 == base1) {
       if (is_eq)
         const_cast<ICmp*>(icmp)->setPtrCmpMode(ICmp::PROVENANCE);
-      else if (is_inbounds(*op0) && is_inbounds(*op1))
+      else if (is_inbounds(*op0) && is_inbounds(*op1) && !is_signed_cmp)
+        // Even if op0 and op1 are inbounds, 'icmp slt op0, op1' must
+        // compare underlying addresses because it is possible for the block
+        // to span across [a, b] where a >s 0 && b <s 0.
         const_cast<ICmp*>(icmp)->setPtrCmpMode(ICmp::OFFSETONLY);
     }
   }

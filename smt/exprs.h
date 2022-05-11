@@ -20,12 +20,12 @@ class AndExpr {
   std::set<expr> exprs;
 
 public:
-  AndExpr() {}
+  AndExpr() = default;
   template <typename T>
   AndExpr(T &&e) { add(std::forward<T>(e)); }
 
-  void add(const expr &e);
-  void add(expr &&e);
+  void add(const expr &e, unsigned limit = 16);
+  void add(expr &&e, unsigned limit = 16);
   void add(const AndExpr &other);
   void del(const AndExpr &other);
   void reset();
@@ -54,7 +54,7 @@ class DisjointExpr {
   std::optional<T> default_val;
 
 public:
-  DisjointExpr() {}
+  DisjointExpr() = default;
   DisjointExpr(const T &default_val) : default_val(default_val) {}
   DisjointExpr(const std::optional<T> &default_val) : default_val(default_val){}
   DisjointExpr(T &&default_val) : default_val(std::move(default_val)) {}
@@ -167,7 +167,7 @@ class FunctionExpr {
   std::optional<expr> default_val;
 
 public:
-  FunctionExpr() {}
+  FunctionExpr() = default;
   FunctionExpr(expr &&default_val) : default_val(std::move(default_val)) {}
   void add(const expr &key, expr &&val);
   void add(const FunctionExpr &other);

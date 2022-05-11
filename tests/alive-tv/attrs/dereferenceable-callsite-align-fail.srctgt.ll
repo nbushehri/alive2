@@ -20,3 +20,5 @@ define i32 @tgt(i1 %c, i32* %p) {
 declare void @f(i32* %ptr)
 
 ; ERROR: Source is more defined than target
+; XFAIL: call with escaped locals
+; SKIP-IDENTITY

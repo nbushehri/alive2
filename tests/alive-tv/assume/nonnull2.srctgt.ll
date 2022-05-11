@@ -12,3 +12,5 @@ define void @tgt(i8* %ptr) {
   call void @llvm.assume(i1 1) [ "nonnull"(i8* %ptr) ]
   ret void
 }
+; XFAIL: call with escaped locals
+; SKIP-IDENTITY

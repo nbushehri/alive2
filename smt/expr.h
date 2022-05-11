@@ -23,7 +23,7 @@ namespace smt {
 class expr {
   uintptr_t ptr;
 
-  expr(Z3_ast ast);
+  expr(Z3_ast ast) noexcept;
   bool isZ3Ast() const;
   Z3_ast ast() const;
   Z3_ast operator()() const { return ast(); }
@@ -67,9 +67,9 @@ public:
     std::swap(ptr, other.ptr);
   }
 
-  expr(const expr &other);
-  expr(bool val) : expr(val ? mkTrue() : mkFalse()) {}
-  ~expr();
+  expr(const expr &other) noexcept;
+  expr(bool val) noexcept : expr(val ? mkTrue() : mkFalse()) {}
+  ~expr() noexcept;
 
   void operator=(expr &&other);
   void operator=(const expr &other);
@@ -81,6 +81,7 @@ public:
   static expr mkInt(const char *n, unsigned bits);
   static expr mkFloat(double n, const expr &type);
   static expr mkHalf(float n);
+  static expr mkBFloat(float n);
   static expr mkFloat(float n);
   static expr mkDouble(double n);
   static expr mkQuad(double n);
@@ -90,6 +91,7 @@ public:
   static expr mkVar(const char *name, unsigned bits);
   static expr mkBoolVar(const char *name);
   static expr mkHalfVar(const char *name);
+  static expr mkBFloatVar(const char *name);
   static expr mkFloatVar(const char *name);
   static expr mkDoubleVar(const char *name);
   static expr mkQuadVar(const char *name);
@@ -139,17 +141,20 @@ public:
   bool isConstArray(expr &val) const;
   bool isStore(expr &array, expr &idx, expr &val) const;
   bool isLoad(expr &array, expr &idx) const;
+  bool isFuncAsArray(expr &val) const;
 
   bool isFPAdd(expr &rounding, expr &lhs, expr &rhs) const;
   bool isFPSub(expr &rounding, expr &lhs, expr &rhs) const;
   bool isFPMul(expr &rounding, expr &lhs, expr &rhs) const;
   bool isFPDiv(expr &rounding, expr &lhs, expr &rhs) const;
   bool isFPNeg(expr &neg) const;
+  bool isIsFPZero() const;
   bool isNaNCheck(expr &fp) const;
   bool isfloat2BV(expr &fp) const;
 
   // best effort; returns number of statically known bits
   unsigned min_leading_zeros() const;
+  unsigned min_trailing_ones() const;
 
   expr operator+(const expr &rhs) const;
   expr operator-(const expr &rhs) const;
@@ -208,21 +213,25 @@ public:
   expr isFPNegative() const;
   expr isFPNegZero() const;
 
-  expr fadd(const expr &rhs) const;
-  expr fsub(const expr &rhs) const;
-  expr fmul(const expr &rhs) const;
-  expr fdiv(const expr &rhs) const;
+  static expr rne();
+  static expr rna();
+  static expr rtp();
+  static expr rtn();
+  static expr rtz();
+
+  expr fadd(const expr &rhs, const expr &rm) const;
+  expr fsub(const expr &rhs, const expr &rm) const;
+  expr fmul(const expr &rhs, const expr &rm) const;
+  expr fdiv(const expr &rhs, const expr &rm) const;
   expr fabs() const;
   expr fneg() const;
-  expr sqrt() const;
+  expr sqrt(const expr &rm) const;
 
-  static expr fma(const expr &a, const expr &b, const expr &c);
+  static expr fma(const expr &a, const expr &b, const expr &c, const expr &rm);
 
   expr ceil() const;
   expr floor() const;
-  expr roundna() const;
-  expr roundne() const;
-  expr roundtz() const;
+  expr round(const expr &rm) const;
 
   expr foeq(const expr &rhs) const;
   expr fogt(const expr &rhs) const;
@@ -294,12 +303,12 @@ public:
   expr float2BV() const;
   expr float2Real() const;
   expr BV2float(const expr &type) const;
-  expr float2Float(const expr &type) const;
+  expr float2Float(const expr &type, const expr &rm) const;
 
-  expr fp2sint(unsigned bits) const;
-  expr fp2uint(unsigned bits) const;
-  expr sint2fp(const expr &type) const;
-  expr uint2fp(const expr &type) const;
+  expr fp2sint(unsigned bits, const expr &rm) const;
+  expr fp2uint(unsigned bits, const expr &rm) const;
+  expr sint2fp(const expr &type, const expr &rm) const;
+  expr uint2fp(const expr &type, const expr &rm) const;
 
   // we don't expose SMT expr types, so range must be passed as a dummy value
   // of the desired type
@@ -358,6 +367,7 @@ public:
 
   friend class Solver;
   friend class Model;
+  friend class FnModel;
 };
 
 

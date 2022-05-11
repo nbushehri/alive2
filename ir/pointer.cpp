@@ -15,7 +15,7 @@ using namespace util;
 static unsigned ptr_next_idx;
 
 static expr prepend_if(const expr &pre, expr &&e, bool prepend) {
-  return prepend ? pre.concat(e) : move(e);
+  return prepend ? pre.concat(e) : std::move(e);
 }
 
 static string local_name(const State *s, const char *name) {
@@ -72,7 +72,7 @@ Pointer::Pointer(const Memory &m, const char *var_name, const expr &local,
   assert(!local.isValid() || p.bits() == totalBits());
 }
 
-Pointer::Pointer(const Memory &m, expr repr) : m(m), p(move(repr)) {
+Pointer::Pointer(const Memory &m, expr repr) : m(m), p(std::move(repr)) {
   assert(!p.isValid() || p.bits() == totalBits());
 }
 
@@ -165,6 +165,15 @@ expr Pointer::isLocal(bool simplify) const {
   return local == 1;
 }
 
+expr Pointer::isConstGlobal() const {
+  auto bid = getShortBid();
+  auto generic = bid.uge(has_null_block) &&
+                 expr(num_consts_src > 0) &&
+                 bid.ule(num_consts_src + has_null_block - 1);
+  auto tgt = bid.uge(num_nonlocals_src) && bid.ule(num_nonlocals - 1);
+  return !isLocal() && (generic || tgt);
+}
+
 expr Pointer::getBid() const {
   return p.extract(totalBits() - 1, bits_for_offset + bits_for_ptrattrs);
 }
@@ -232,7 +241,7 @@ expr Pointer::getAddress(bool simplify) const {
     expr lc = hasLocalBit() ? expr::mkUInt(1, 1).concat(*local) : *local;
     addr = expr::mkIf(isLocal(), lc, non_local);
   } else
-    addr = move(non_local);
+    addr = std::move(non_local);
 
   return addr + getOffset().zextOrTrunc(bits_ptr_address);
 }
@@ -291,7 +300,7 @@ expr Pointer::inbounds(bool simplify_ptr, bool strict) {
     expr inb = ::inbounds(Pointer(m, ptr_expr), strict);
     if (!inb.isFalse())
       all_ptrs.add(ptr_expr, domain);
-    ret.add(move(inb), domain);
+    ret.add(std::move(inb), domain);
   }
 
   // trim set of valid ptrs
@@ -317,7 +326,7 @@ expr Pointer::isBlockAligned(uint64_t align, bool exact) const {
   return exact ? blk_align == bits : blk_align.uge(bits);
 }
 
-expr Pointer::isAligned(unsigned align) {
+expr Pointer::isAligned(uint64_t align) {
   if (align == 1)
     return true;
 
@@ -339,7 +348,7 @@ expr Pointer::isAligned(unsigned align) {
                  .concat(zero);
     if (bits_for_ptrattrs)
       newp = newp.concat(getAttrs());
-    p = move(newp);
+    p = std::move(newp);
     assert(!p.isValid() || p.bits() == totalBits());
     return { blk_align && offset.extract(bits - 1, 0) == zero };
   }
@@ -350,7 +359,7 @@ expr Pointer::isAligned(unsigned align) {
 static pair<expr, expr> is_dereferenceable(Pointer &p,
                                            const expr &bytes_off,
                                            const expr &bytes,
-                                           unsigned align, bool iswrite) {
+                                           uint64_t align, bool iswrite) {
   expr block_sz = p.blockSizeOffsetT();
   expr offset = p.getOffset();
 
@@ -373,11 +382,11 @@ static pair<expr, expr> is_dereferenceable(Pointer &p,
       isUndef(offset))
     cond = false;
 
-  return { move(cond), p.isAligned(align) };
+  return { std::move(cond), p.isAligned(align) };
 }
 
 // When bytes is 0, pointer is always derefenceable
-AndExpr Pointer::isDereferenceable(const expr &bytes0, unsigned align,
+AndExpr Pointer::isDereferenceable(const expr &bytes0, uint64_t align,
                                    bool iswrite) {
   expr bytes_off = bytes0.zextOrTrunc(bits_for_offset);
   expr bytes = bytes0.zextOrTrunc(bits_size_t);
@@ -392,8 +401,8 @@ AndExpr Pointer::isDereferenceable(const expr &bytes0, unsigned align,
     if (!ub.isFalse() && !aligned.isFalse() && !ptr.blockSize().isZero())
       all_ptrs.add(ptr.release(), domain);
 
-    UB.add(move(ub), domain);
-    is_aligned.add(move(aligned), domain);
+    UB.add(std::move(ub), domain);
+    is_aligned.add(std::move(aligned), domain);
   }
 
   AndExpr exprs;
@@ -415,7 +424,7 @@ AndExpr Pointer::isDereferenceable(const expr &bytes0, unsigned align,
   return exprs;
 }
 
-AndExpr Pointer::isDereferenceable(uint64_t bytes, unsigned align,
+AndExpr Pointer::isDereferenceable(uint64_t bytes, uint64_t align,
                                    bool iswrite) {
   return isDereferenceable(expr::mkUInt(bytes, bits_size_t), align, iswrite);
 }
@@ -472,7 +481,7 @@ expr Pointer::refined(const Pointer &other) const {
   //local &= block_refined(other);
 
   return expr::mkIf(isNull(), other.isNull(),
-                    expr::mkIf(isLocal(), move(local), *this == other) &&
+                    expr::mkIf(isLocal(), std::move(local), *this == other) &&
                       isBlockAlive().implies(other.isBlockAlive()));
 }
 
@@ -516,8 +525,8 @@ expr Pointer::isWritable() const {
   expr non_local
     = num_consts_src == 1 ? bid != has_null_block :
         (num_consts_src ? bid.ugt(has_null_block + num_consts_src - 1) : true);
-  if (m.numNonlocals() > num_nonlocals_src + num_extra_nonconst_tgt)
-    non_local &= bid.ult(num_nonlocals_src + num_extra_nonconst_tgt);
+  if (m.numNonlocals() > num_nonlocals_src)
+    non_local &= bid.ult(num_nonlocals_src);
   return isLocal() || non_local;
 }
 

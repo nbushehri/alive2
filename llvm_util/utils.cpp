@@ -32,6 +32,7 @@ FloatType half_type("half", FloatType::Half);
 FloatType float_type("float", FloatType::Float);
 FloatType double_type("double", FloatType::Double);
 FloatType quad_type("fp128", FloatType::Quad);
+FloatType bfloat_type("bfloat", FloatType::BFloat);
 
 // cache complex types
 unordered_map<const llvm::Type*, unique_ptr<Type>> type_cache;
@@ -126,6 +127,8 @@ Type* llvm_type2alive(const llvm::Type *ty) {
     return &double_type;
   case llvm::Type::FP128TyID:
     return &quad_type;
+  case llvm::Type::BFloatTyID:
+    return &bfloat_type;
 
   case llvm::Type::PointerTyID: {
     // TODO: support for non-64 bits pointers
@@ -174,7 +177,7 @@ Type* llvm_type2alive(const llvm::Type *ty) {
         }
       }
       cache = make_unique<StructType>("ty_" + to_string(type_id_counter++),
-                                      move(elems), move(is_padding));
+                                      std::move(elems), std::move(is_padding));
     }
     return cache.get();
   }
@@ -224,7 +227,7 @@ Type* llvm_type2alive(const llvm::Type *ty) {
 Value* make_intconst(uint64_t val, int bits) {
   auto c = make_unique<IntConst>(get_int_type(bits), val);
   auto ret = c.get();
-  current_fn->addConstant(move(c));
+  current_fn->addConstant(std::move(c));
   return ret;
 }
 
@@ -234,7 +237,6 @@ Value* make_intconst(uint64_t val, int bits) {
     ENSURE(value_cache.emplace(v, val_cpy).second); \
     return val_cpy;                                 \
   } while (0)
-
 
 Value* get_operand(llvm::Value *v,
                    function<Value*(llvm::ConstantExpr*)> constexpr_conv,
@@ -254,7 +256,7 @@ Value* get_operand(llvm::Value *v,
     else
       c = make_unique<IntConst>(*ty, toString(cnst->getValue(), 10, false));
     auto ret = c.get();
-    current_fn->addConstant(move(c));
+    current_fn->addConstant(std::move(c));
     RETURN_CACHE(ret);
   }
 
@@ -262,46 +264,45 @@ Value* get_operand(llvm::Value *v,
     auto &apfloat = cnst->getValueAPF();
     unique_ptr<FloatConst> c;
     switch (ty->getAsFloatType()->getFpType()) {
-    case FloatType::Half:
-      c = make_unique<FloatConst>(*ty,
-                                  apfloat.bitcastToAPInt().getLimitedValue());
-      break;
     case FloatType::Float:
+    case FloatType::BFloat:
       c = make_unique<FloatConst>(*ty, apfloat.convertToFloat());
       break;
     case FloatType::Double:
       c = make_unique<FloatConst>(*ty, apfloat.convertToDouble());
       break;
+    case FloatType::Half:
     case FloatType::Quad:
       c = make_unique<FloatConst>(*ty,
-                                  toString(apfloat.bitcastToAPInt(), 10, true));
+                                  toString(apfloat.bitcastToAPInt(), 10, false),
+                                  true);
       break;
     case FloatType::Unknown:
       UNREACHABLE();
     }
     auto ret = c.get();
-    current_fn->addConstant(move(c));
+    current_fn->addConstant(std::move(c));
     RETURN_CACHE(ret);
   }
 
   if (isa<llvm::PoisonValue>(v)) {
     auto val = make_unique<PoisonValue>(*ty);
     auto ret = val.get();
-    current_fn->addConstant(move(val));
+    current_fn->addConstant(std::move(val));
     RETURN_CACHE(ret);
   }
 
   if (isa<llvm::UndefValue>(v)) {
     auto val = make_unique<UndefValue>(*ty);
     auto ret = val.get();
-    current_fn->addUndef(move(val));
+    current_fn->addUndef(std::move(val));
     RETURN_CACHE(ret);
   }
 
   if (isa<llvm::ConstantPointerNull>(v)) {
     auto val = make_unique<NullPointerValue>(*ty);
     auto ret = val.get();
-    current_fn->addConstant(move(val));
+    current_fn->addConstant(std::move(val));
     RETURN_CACHE(ret);
   }
 
@@ -329,10 +330,10 @@ Value* get_operand(llvm::Value *v,
     } else {
       name = '@' + gv->getName().str();
     }
-    auto val = make_unique<GlobalVariable>(*ty, move(name), size, align,
+    auto val = make_unique<GlobalVariable>(*ty, std::move(name), size, align,
                                            gv->isConstant());
     auto gvar = val.get();
-    current_fn->addConstant(move(val));
+    current_fn->addConstant(std::move(val));
     RETURN_CACHE(gvar);
   }
 
@@ -359,14 +360,14 @@ Value* get_operand(llvm::Value *v,
             [&cnst](auto i) { return cnst->getOperand(i); }, vals))
       return nullptr;
 
-    auto val = make_unique<AggregateValue>(*ty, move(vals));
+    auto val = make_unique<AggregateValue>(*ty, std::move(vals));
     auto ret = val.get();
     if (all_of(cnst->op_begin(), cnst->op_end(), [](auto &V) -> bool
         { return isa<llvm::ConstantData>(V); })) {
-      current_fn->addConstant(move(val));
+      current_fn->addConstant(std::move(val));
       RETURN_CACHE(ret);
     } else {
-      current_fn->addAggregate(move(val));
+      current_fn->addAggregate(std::move(val));
       return copy_inserter(ret);
     }
   }
@@ -377,9 +378,9 @@ Value* get_operand(llvm::Value *v,
             [&cnst](auto i) { return cnst->getElementAsConstant(i); }, vals))
       return nullptr;
 
-    auto val = make_unique<AggregateValue>(*ty, move(vals));
+    auto val = make_unique<AggregateValue>(*ty, std::move(vals));
     auto ret = val.get();
-    current_fn->addConstant(move(val));
+    current_fn->addConstant(std::move(val));
     RETURN_CACHE(ret);
   }
 
@@ -389,9 +390,9 @@ Value* get_operand(llvm::Value *v,
             [&cnst](auto i) { return cnst->getElementValue(i); }, vals))
       return nullptr;
 
-    auto val = make_unique<AggregateValue>(*ty, move(vals));
+    auto val = make_unique<AggregateValue>(*ty, std::move(vals));
     auto ret = val.get();
-    current_fn->addConstant(move(val));
+    current_fn->addConstant(std::move(val));
     RETURN_CACHE(ret);
   }
 
@@ -422,9 +423,12 @@ PRINT(llvm::Value)
 
 void init_llvm_utils(ostream &os, const llvm::DataLayout &dataLayout) {
   out = &os;
+  type_cache.clear();
   type_id_counter = 0;
+  int_types.clear();
   int_types.resize(65);
   int_types[1] = make_unique<IntType>("i1", 1);
+  ptr_types.clear();
   ptr_types.emplace_back(make_unique<PtrType>(0));
   DL = &dataLayout;
 }

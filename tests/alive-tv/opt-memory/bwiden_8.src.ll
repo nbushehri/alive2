@@ -15,4 +15,4 @@ define i64 @f() {
   ret i64 %res2
 }
 
-; CHECK: bits_byte: 64
+; CHECK: bits_byte: 8

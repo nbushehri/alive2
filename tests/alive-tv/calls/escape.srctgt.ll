@@ -20,4 +20,6 @@ define i8 @tgt() {
   ret i8 1
 }
 
+; SKIP-IDENTITY
 ; ERROR: Value mismatch
+; XFAIL: call with escaped locals

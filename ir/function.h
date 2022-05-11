@@ -106,6 +106,9 @@ public:
   const BasicBlock& getSinkBB() const { return sink_bb; }
   BasicBlock& getBB(std::string_view name, bool push_front = false);
   const BasicBlock& getBB(std::string_view name) const;
+  const BasicBlock& bbOf(const Instr &i) const;
+
+  BasicBlock& insertBBBefore(std::string_view name, const BasicBlock &bb);
 
   void removeBB(BasicBlock &BB);
 
@@ -120,6 +123,9 @@ public:
   std::vector<std::string_view> getGlobalVarNames() const;
 
   void addPredicate(std::unique_ptr<Predicate> &&p);
+  util::const_strip_unique_ptr<decltype(predicates)> getPredicates() const {
+    return predicates;
+  }
 
   void addUndef(std::unique_ptr<UndefValue> &&c);
   util::const_strip_unique_ptr<decltype(undefs)> getUndefs() const {
@@ -127,12 +133,14 @@ public:
   }
 
   void addAggregate(std::unique_ptr<AggregateValue> &&a);
+  util::const_strip_unique_ptr<decltype(aggregates)> getAggregates() const {
+    return aggregates;
+  }
 
   void addInput(std::unique_ptr<Value> &&c);
   util::const_strip_unique_ptr<decltype(inputs)> getInputs() const {
     return inputs;
   }
-  bool hasSameInputs(const Function &rhs) const;
   Value *getReturnedInput() const { return returned_input; }
   void setReturnedInput(Value *v) { returned_input = v; }
 

@@ -33,3 +33,4 @@ define void @g6(i8* readonly %p) {
   store i8 0, i8* %p2 ; should be UB
   ret void
 }
+; XFAIL: call with escaped locals

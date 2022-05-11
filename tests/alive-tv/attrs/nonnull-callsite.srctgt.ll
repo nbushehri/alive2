@@ -12,3 +12,5 @@ define i1 @tgt(i8* %p) {
 declare void @f(i8*)
 
 ; ERROR: Value mismatch
+; XFAIL: call with escaped locals
+; SKIP-IDENTITY

@@ -16,4 +16,4 @@ define i32 @f() {
   ret i32 %res2
 }
 
-; CHECK: bits_byte: 16
+; CHECK: bits_byte: 8

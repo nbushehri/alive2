@@ -1,0 +1,159 @@
+---
+name: memory_lambda
+func: alive.tv_v2
+args:
+  - {}
+  - !ir |
+    target datalayout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128"
+    target triple = "x86_64-unknown-linux-gnu"
+
+    %0 = type opaque
+
+    @stdout = external global %0*, align 8
+
+    ; Function Attrs: minsize nofree nounwind
+    define fastcc { i32 } @0(i32 %0, i32 %1, i32 %2, i32 %3, i32 %4) #0 {
+    outline_entry:
+      %5 = and i32 %0, 255
+      %6 = load %0*, %0** @stdout, align 8, !tbaa !0
+      %7 = tail call i32 @fputc(i32 %5, %0* %6)
+      %8 = load %0*, %0** @stdout, align 8, !tbaa !0
+      %9 = tail call i32 @fputc(i32 27, %0* %8)
+      %10 = load %0*, %0** @stdout, align 8, !tbaa !0
+      %11 = tail call i32 @fputc(i32 38, %0* %10)
+      %12 = load %0*, %0** @stdout, align 8, !tbaa !0
+      %13 = tail call i32 @fputc(i32 86, %0* %12)
+      %14 = lshr i32 %1, 8
+      %15 = and i32 %14, 255
+      %16 = load %0*, %0** @stdout, align 8, !tbaa !0
+      %17 = tail call i32 @fputc(i32 %15, %0* %16)
+      %18 = and i32 %1, 255
+      %19 = load %0*, %0** @stdout, align 8, !tbaa !0
+      %20 = tail call i32 @fputc(i32 %18, %0* %19)
+      %21 = load %0*, %0** @stdout, align 8, !tbaa !0
+      %22 = tail call i32 @fputc(i32 27, %0* %21)
+      %23 = load %0*, %0** @stdout, align 8, !tbaa !0
+      %24 = tail call i32 @fputc(i32 38, %0* %23)
+      %25 = load %0*, %0** @stdout, align 8, !tbaa !0
+      %26 = tail call i32 @fputc(i32 74, %0* %25)
+      %27 = sdiv i32 %2, %3
+      %28 = sub i32 %27, %0
+      %29 = sdiv i32 %28, 2
+      %30 = lshr i32 %29, 8
+      %31 = and i32 %30, 255
+      %32 = load %0*, %0** @stdout, align 8, !tbaa !0
+      %33 = tail call i32 @fputc(i32 %31, %0* %32)
+      %34 = and i32 %29, 255
+      %35 = load %0*, %0** @stdout, align 8, !tbaa !0
+      %36 = tail call i32 @fputc(i32 %34, %0* %35)
+      %37 = load %0*, %0** @stdout, align 8, !tbaa !0
+      %38 = tail call i32 @fputc(i32 27, %0* %37)
+      %39 = load %0*, %0** @stdout, align 8, !tbaa !0
+      %40 = tail call i32 @fputc(i32 38, %0* %39)
+      %41 = load %0*, %0** @stdout, align 8, !tbaa !0
+      %42 = tail call i32 @fputc(i32 75, %0* %41)
+      %43 = sdiv i32 %4, %3
+      %44 = sub i32 %43, %1
+      %45 = sdiv i32 %44, 2
+      %46 = lshr i32 %45, 8
+      %47 = and i32 %46, 255
+      %48 = load %0*, %0** @stdout, align 8, !tbaa !0
+      %49 = tail call i32 @fputc(i32 %47, %0* %48)
+      %50 = and i32 %45, 255
+      %51 = insertvalue { i32 } undef, i32 %50, 0
+      ret { i32 } %51
+    }
+
+    ; Function Attrs: minsize nofree nounwind optsize
+    declare noundef i32 @fputc(i32 noundef, %0* nocapture noundef) #1
+
+    attributes #0 = { minsize nofree nounwind }
+    attributes #1 = { minsize nofree nounwind optsize "disable-tail-calls"="false" "frame-pointer"="none" "less-precise-fpmad"="false" "no-infs-fp-math"="false" "no-nans-fp-math"="false" "no-signed-zeros-fp-math"="false" "no-trapping-math"="true" "stack-protector-buffer-size"="4" "target-cpu"="x86-64" "target-features"="+cx8,+fxsr,+mmx,+sse,+sse2,+x87" "tune-cpu"="generic" "unsafe-fp-math"="false" "use-soft-float"="false" }
+
+    !0 = !{!1, !1, i64 0}
+    !1 = !{!"any pointer", !2, i64 0}
+    !2 = !{!"omnipotent char", !3, i64 0}
+    !3 = !{!"Simple C/C++ TBAA"}
+  - !ir |
+    target datalayout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128"
+    target triple = "x86_64-unknown-linux-gnu"
+
+    %0 = type opaque
+
+    @stdout = external global %0*, align 8
+
+    ; Function Attrs: minsize nofree nounwind
+    define fastcc { i32 } @0(i32 %0, i32 %1, i32 %2, i32 %3, i32 %4) #0 {
+    outline_entry:
+      %5 = load %0*, %0** @stdout, align 8, !tbaa !0
+      %6 = tail call i32 @fputc(i32 86, %0* %5)
+      %7 = lshr i32 %0, 8
+      %8 = and i32 %7, 255
+      %9 = load %0*, %0** @stdout, align 8, !tbaa !0
+      %10 = tail call i32 @fputc(i32 %8, %0* %9)
+      %11 = and i32 %0, 255
+      %12 = load %0*, %0** @stdout, align 8, !tbaa !0
+      %13 = tail call i32 @fputc(i32 %11, %0* %12)
+      %14 = load %0*, %0** @stdout, align 8, !tbaa !0
+      %15 = tail call i32 @fputc(i32 27, %0* %14)
+      %16 = load %0*, %0** @stdout, align 8, !tbaa !0
+      %17 = tail call i32 @fputc(i32 38, %0* %16)
+      %18 = load %0*, %0** @stdout, align 8, !tbaa !0
+      %19 = tail call i32 @fputc(i32 74, %0* %18)
+      %20 = sdiv i32 %1, %2
+      %21 = sub i32 %20, %3
+      %22 = sdiv i32 %21, 2
+      %23 = lshr i32 %22, 8
+      %24 = and i32 %23, 255
+      %25 = load %0*, %0** @stdout, align 8, !tbaa !0
+      %26 = tail call i32 @fputc(i32 %24, %0* %25)
+      %27 = and i32 %22, 255
+      %28 = load %0*, %0** @stdout, align 8, !tbaa !0
+      %29 = tail call i32 @fputc(i32 %27, %0* %28)
+      %30 = load %0*, %0** @stdout, align 8, !tbaa !0
+      %31 = tail call i32 @fputc(i32 27, %0* %30)
+      %32 = load %0*, %0** @stdout, align 8, !tbaa !0
+      %33 = tail call i32 @fputc(i32 38, %0* %32)
+      %34 = load %0*, %0** @stdout, align 8, !tbaa !0
+      %35 = tail call i32 @fputc(i32 75, %0* %34)
+      %36 = sdiv i32 %4, %2
+      %37 = sub i32 %36, %0
+      %38 = sdiv i32 %37, 2
+      %39 = insertvalue { i32 } undef, i32 %38, 0
+      ret { i32 } %39
+    }
+
+    ; Function Attrs: minsize nofree nounwind optsize
+    declare noundef i32 @fputc(i32 noundef, %0* nocapture noundef) #1
+
+    attributes #0 = { minsize nofree nounwind }
+    attributes #1 = { minsize nofree nounwind optsize "disable-tail-calls"="false" "frame-pointer"="none" "less-precise-fpmad"="false" "no-infs-fp-math"="false" "no-nans-fp-math"="false" "no-signed-zeros-fp-math"="false" "no-trapping-math"="true" "stack-protector-buffer-size"="4" "target-cpu"="x86-64" "target-features"="+cx8,+fxsr,+mmx,+sse,+sse2,+x87" "tune-cpu"="generic" "unsafe-fp-math"="false" "use-soft-float"="false" }
+
+    !0 = !{!1, !1, i64 0}
+    !1 = !{!"any pointer", !2, i64 0}
+    !2 = !{!"omnipotent char", !3, i64 0}
+    !3 = !{!"Simple C/C++ TBAA"}
+expected:
+  status: unsound
+  valid: false
+  errs: "ERROR: Source is more defined than target\n"
+  test_input:
+    args: [0, poison, poison, poison, poison]
+    memory:
+      - size: 0
+        align: 0
+      - size: 8
+        align: 3
+        bytes:
+          - [0,255,[0,0,0]]
+          - [1,255,[0,0,1]]
+          - [2,255,[0,0,2]]
+          - [3,255,[0,0,3]]
+          - [4,255,[0,0,4]]
+          - [5,255,[0,0,5]]
+          - [6,255,[0,0,6]]
+          - [7,255,[0,0,7]]
+      - size: 8
+        align: 32
+        bytes:
+          - [null,0,[0,0,2]]

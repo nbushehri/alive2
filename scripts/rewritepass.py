@@ -30,13 +30,14 @@ def wrap(args):
   passes = args.split(',')
 
   pass_types = {
-    "module"   : [],
-    "cgscc"    : [],
-    "function" : [],
-    "loop"     : ["function"]
+    "module"    : [],
+    "cgscc"     : [],
+    "function"  : [],
+    "loop"      : ["function"],
+    "loop-mssa" : ["function"],
   }
 
-  firstpass = None
+  firstpass = ''
   type = None
 
   skip = ['verify', 'invalidate<all>']
@@ -91,14 +92,27 @@ def wrap(args):
   if m is None:
     return wrap_str(args, ['module'])
 
+  type = m.group(1)
+
+  # Some loop passes must use loop-mssa instead of loop
+  # And there's no place to get this info
+  loop_mssa = {
+    'licm',
+    'simple-loop-unswitch',
+  }
+  if p in loop_mssa:
+    type = 'LOOP-MSSA'
+
   type = {
     'CGSCC'          : 'cgscc',
     'FUNCTION'       : 'function',
     'FUNCTION_ALIAS' : 'function',
     'LOOP'           : 'loop',
+    'LOOPNEST'       : 'loop',
+    'LOOP-MSSA'      : 'loop-mssa',
     'MODULE'         : 'module',
     'MODULE_ALIAS'   : 'module',
-  }[m.group(1)]
+  }[type]
   return wrap_str(args, [type] + pass_types[type])
 
 def run_opt(passes):
@@ -111,29 +125,32 @@ if len(sys.argv) == 3:
 else:
   tests = [
     ('sroa', 'function(sroa)'),
-    ('simplify-cfg', 'function(simplify-cfg)'),
-    ('licm', 'function(loop(licm))'),
+    ('simplifycfg', 'function(simplifycfg)'),
+    ('licm', 'function(loop-mssa(licm))'),
+    ('loop-mssa(licm)', 'function(loop-mssa(licm))'),
     ('argpromotion', 'cgscc(argpromotion)'),
     ('loop-extract', 'module(loop-extract)'),
-    ('unswitch<nontrivial>', 'function(loop(unswitch<nontrivial>))'),
+    ('loop-mssa(simple-loop-unswitch<nontrivial>)', 'function(loop-mssa(simple-loop-unswitch<nontrivial>))'),
     ('sroa,verify', 'function(sroa,verify)'),
     ('verify,sroa', 'function(verify,sroa)'),
     ('loop-mssa(loop-instsimplify)', 'function(loop-mssa(loop-instsimplify))'),
+    ('loop-unroll-and-jam', 'function(loop(loop-unroll-and-jam))'),
     ('require<basic-aa>,sroa', 'function(require<basic-aa>,sroa)'),
     ('cgscc(repeat<2>(inline,function(dce)))', 'cgscc(repeat<2>(inline,function(dce)))'),
     ('repeat<2>(sroa)', 'function(repeat<2>(sroa))'),
     ('cgscc(devirt<4>(inline))', 'cgscc(devirt<4>(inline))'),
     ('devirt<1>(inline,function(gvn))', 'cgscc(devirt<1>(inline,function(gvn)))'),
     ('require<opt-remark-emit>,loop(loop-unroll-full)', 'function(require<opt-remark-emit>,loop(loop-unroll-full))'),
-    ('invalidate<domtree>,early-cse-memssa', 'function(invalidate<domtree>,early-cse-memssa)'),
+    ('invalidate<domtree>,early-cse<memssa>', 'function(invalidate<domtree>,early-cse<memssa>)'),
     ('function(loop-vectorize,instcombine)', 'function(loop-vectorize,instcombine)'),
     ('function(loop-vectorize),function(instcombine)', 'function(loop-vectorize),function(instcombine)'),
     ('function(loop-vectorize),function(instcombine),globalopt', 'module(function(loop-vectorize),function(instcombine),globalopt)'),
-    ('function(ee-instrument),function(ee-instrument),cgscc(inline),function(post-inline-ee-instrument)',
-       'module(function(ee-instrument),function(ee-instrument),cgscc(inline),function(post-inline-ee-instrument))'),
+    ('function(ee-instrument),function(ee-instrument),cgscc(inline),function(ee-instrument<post-inline>)',
+       'module(function(ee-instrument),function(ee-instrument),cgscc(inline),function(ee-instrument<post-inline>))'),
     ('function(print<demanded-bits>),attributor', 'module(function(print<demanded-bits>),attributor)'),
     ('function(tailcallelim),cgscc(inline)', 'module(function(tailcallelim),cgscc(inline))'),
     ('function(slp-vectorizer),module(hotcoldsplit)', 'module(function(slp-vectorizer),module(hotcoldsplit))'),
+    ('verify', 'module(verify)'),
     ('default<O2>', 'module(default<O2>)')
   ]
 
@@ -144,8 +161,8 @@ else:
       print('Expected:', o)
       print()
     elif not run_opt(i):
-      print('FAIL running input:', i)
+      print('FAIL running input:', i, '\n')
     elif not run_opt(o + ',globalopt'):
-      print('FAIL running output:', o)
+      print('FAIL running output:', o, '\n')
     else:
       print('PASS:', i)

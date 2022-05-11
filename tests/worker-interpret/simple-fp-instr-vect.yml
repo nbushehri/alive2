@@ -1,0 +1,75 @@
+---
+name: fadd_vect_float
+func: alive.interpret
+args:
+  - {}
+  - !ir | 
+    define <2 x float> @test_fadd_vec(<2 x float> %x) {
+      %res = fadd <2 x float> %x, <float 42.0, float 1.0> 
+      ret <2 x float> %res
+    }
+  - args: [[3.400000e+04, 33.0]]
+expected:
+  status: done
+  undefined: false
+  return_value: [34042.0, 34.0]
+---
+name: fsub_vect_float
+func: alive.interpret
+args:
+  - {}
+  - !ir | 
+    define <2 x float> @test_fsub_vec(<2 x float> %x) {
+      %res = fsub <2 x float> %x, <float 42.0, float 1.0> 
+      ret <2 x float> %res
+    }
+  - args: [[3.400000e+04, 33.0]]
+expected:
+  status: done
+  undefined: false
+  return_value: [33958.0, 32.0]
+---
+name: fmul_vect_float
+func: alive.interpret
+args:
+  - {}
+  - !ir | 
+    define <2 x float> @test_fmul_vec(<2 x float> %x) {
+      %res = fmul <2 x float> %x, <float 42.0, float 2.0> 
+      ret <2 x float> %res
+    }
+  - args: [[3.400000e+04, 33.0]]
+expected:
+  status: done
+  undefined: false
+  return_value: [1428000.0, 66.0]
+---
+name: fdiv_vect_float
+func: alive.interpret
+args:
+  - {}
+  - !ir | 
+    define <2 x float> @test_fdiv_vec(<2 x float> %x) {
+      %res = fdiv <2 x float> %x, <float 42.0, float 2.0> 
+      ret <2 x float> %res
+    }
+  - args: [[3.400000e+04, 33.0]]
+expected:
+  status: done
+  undefined: false
+  return_value: [809.5238037109375, 16.5] #TODO : this is not exact. we need to do something about comparing fp numbers
+---
+name: frem_vect_float
+func: alive.interpret
+args:
+  - {}
+  - !ir | 
+    define <2 x float> @test_frem_vec(<2 x float> %x) {
+      %res = frem <2 x float> %x, <float 42.0, float 2.0> 
+      ret <2 x float> %res
+    }
+  - args: [[3.400000e+04, 33.0]]
+expected:
+  status: done
+  undefined: false
+  return_value: [22.0, 1.0]

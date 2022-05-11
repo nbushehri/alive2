@@ -1,0 +1,30 @@
+---
+name: call_trivial
+func: alive.interpret
+args:
+  - {}
+  - !ir
+    declare void @f()
+    define void @g() {
+      call void @f()
+      ret void
+    }
+  - args: []
+expected:
+  status: unsupported
+  unsupported: call
+---
+name: call_and_return
+func: alive.interpret
+args:
+  - {}
+  - !ir
+    declare i32 @f()
+    define i32 @g() {
+      %x = call i32 @f()
+      ret i32 %x
+    }
+  - args: []
+expected:
+  status: unsupported
+  unsupported: call

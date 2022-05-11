@@ -2,6 +2,10 @@
 ; To detect this bug,
 ; 1. infinite loops should be supported
 ; 2. function calls should be able to update escaped local blocks
+
+; SKIP-IDENTITY
+; XFAIL: call with escaped locals
+
 ; ModuleID = 'music_task.bc'
 source_filename = "music.i"
 target datalayout = "e-m:e-i8:8:32-i16:16:32-i64:64-i128:128-n32:64-S128"

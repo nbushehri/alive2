@@ -1,0 +1,119 @@
+---
+name: sadd_ov_i32_poison_1
+func: alive.interpret
+args:
+  - {}
+  - !ir | 
+    declare { i32, i1 } @llvm.sadd.with.overflow.i32(i32, i32)
+
+    define { i32, i1 } @test_sadd_ov(i32 %x) {
+      %b = call { i32, i1 } @llvm.sadd.with.overflow.i32(i32 %x, i32 poison)
+      ret { i32, i1 } %b
+    }
+  - args: [30]
+expected:
+  status: done
+  undefined: false
+  return_value: [poison, poison]
+---
+name: sadd_ov_i32_1
+func: alive.interpret
+args:
+  - {}
+  - !ir | 
+    declare { i32, i1 } @llvm.sadd.with.overflow.i32(i32, i32)
+
+    define { i32, i1 } @test_sadd_ov(i32 %x) {
+      %b = call { i32, i1 } @llvm.sadd.with.overflow.i32(i32 %x, i32 2)
+      ret { i32, i1 } %b
+    }
+  - args: [30]
+expected:
+  status: done
+  undefined: false
+  return_value: [32, 0]
+---
+name: uadd_ov_i32_1
+func: alive.interpret
+args:
+  - {}
+  - !ir | 
+    declare { i32, i1 } @llvm.uadd.with.overflow.i32(i32, i32)
+
+    define { i32, i1 } @test_uadd_ov(i32 %x) {
+      %b = call { i32, i1 } @llvm.uadd.with.overflow.i32(i32 %x, i32 2)
+      ret { i32, i1 } %b
+    }
+  - args: [2147483647]
+expected:
+  status: done
+  undefined: false
+  return_value: [-2147483647, 0] #we may need to return both unsigned and signed values in these instances
+---
+name: ssub_ov_i32_1
+func: alive.interpret
+args:
+  - {}
+  - !ir | 
+    declare { i32, i1 } @llvm.ssub.with.overflow.i32(i32, i32)
+
+    define { i32, i1 } @test_ssub_ov(i32 %x, i32 %y) {
+      %b = call { i32, i1 } @llvm.ssub.with.overflow.i32(i32 %x, i32 %y)
+      ret { i32, i1 } %b
+    }
+  - args: [2147483647, 7]
+expected:
+  status: done
+  undefined: false
+  return_value: [2147483640, 0]
+---
+name: usub_ov_i32_1
+func: alive.interpret
+args:
+  - {}
+  - !ir | 
+    declare { i32, i1 } @llvm.usub.with.overflow.i32(i32, i32)
+
+    define { i32, i1 } @test_usub_ov(i32 %x, i32 %y) {
+      %b = call { i32, i1 } @llvm.usub.with.overflow.i32(i32 %x, i32 %y)
+      ret { i32, i1 } %b
+    }
+  - args: [2, 77]
+expected:
+  status: done
+  undefined: false
+  return_value: [-75, -1]
+---
+name: umul_ov_i32_1
+func: alive.interpret
+args:
+  - {}
+  - !ir | 
+    declare { i32, i1 } @llvm.umul.with.overflow.i32(i32, i32)
+
+    define { i32, i1 } @test_umul_ov(i32 %x, i32 %y) {
+      %b = call { i32, i1 } @llvm.umul.with.overflow.i32(i32 %x, i32 %y)
+      ret { i32, i1 } %b
+    }
+  - args: [2147483647, 2]
+expected:
+  status: done
+  undefined: false
+  return_value: [-2, 0]
+---
+name: smul_ov_i32_1
+func: alive.interpret
+args:
+  - {}
+  - !ir | 
+    declare { i32, i1 } @llvm.smul.with.overflow.i32(i32, i32)
+
+    define { i32, i1 } @test_smul_ov(i32 %x, i32 %y) {
+      %b = call { i32, i1 } @llvm.smul.with.overflow.i32(i32 %x, i32 %y)
+      ret { i32, i1 } %b
+    }
+  - args: [2147483647, 2]
+expected:
+  status: done
+  undefined: false
+  return_value: [-2, -1]

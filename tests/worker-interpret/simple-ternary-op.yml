@@ -1,0 +1,34 @@
+---
+name: fshl_i8_1
+func: alive.interpret
+args:
+  - {}
+  - !ir | 
+    declare i8  @llvm.fshl.i8 (i8 %a, i8 %b, i8 %c)
+
+    define i8 @test_fshl_1(i8 %a, i8 %b, i8 %c) {
+      %res = call i8 @llvm.fshl.i8(i8 %a, i8 %b, i8 %c)
+      ret i8 %res
+    }
+  - args: [255, 0, 15]
+expected:
+  status: done
+  undefined: false
+  return_value: -128
+---
+name: fshr_i8_1
+func: alive.interpret
+args:
+  - {}
+  - !ir | 
+    declare i8  @llvm.fshr.i8 (i8 %a, i8 %b, i8 %c)
+
+    define i8 @test_fshr_1(i8 %a, i8 %b, i8 %c) {
+      %res = call i8 @llvm.fshr.i8(i8 %a, i8 %b, i8 %c)
+      ret i8 %res
+    }
+  - args: [255, 0, 15]
+expected:
+  status: done
+  undefined: false
+  return_value: -2

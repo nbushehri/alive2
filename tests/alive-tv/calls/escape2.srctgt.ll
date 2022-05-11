@@ -23,3 +23,5 @@ define i8 @tgt() {
 
   ret i8 1
 }
+; XFAIL: call with escaped locals
+; SKIP-IDENTITY

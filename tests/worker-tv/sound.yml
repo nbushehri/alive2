@@ -1,0 +1,51 @@
+---
+name: alive-tv/easy-1
+func: alive.tv_v2
+args:
+  - disable_undef_input: false
+    disable_poison_input: false
+  - !ir |
+    define i8 @f(i8, i8) {
+      %x = add nsw i8 %0, %1
+      ret i8 %x
+    }
+  - !ir |
+    define i8 @f(i8, i8) {
+      %x = add i8 %0, %1
+      ret i8 %x
+    }
+expected:
+  status: sound
+  valid: true
+---
+name: collatz_next
+func: alive.tv_v2
+args:
+  - disable_undef_input: false
+    disable_poison_input: false
+  - !ir |
+    define i8 @f(i8) {
+      %2 = and i8 %0, 1
+      %3 = sub nsw i8 0, %2
+      %4 = shl i8 %0, 1
+      %5 = lshr i8 %0, 1
+      %6 = add nuw i8 %5, 1
+      %7 = add i8 %6, %4
+      %8 = and i8 %7, %3
+      %9 = sub i8 %0, %5
+      %10 = add i8 %9, %8
+      ret i8 %10
+    }
+  - !ir |
+    define i8 @f(i8) {
+      %2 = and i8 %0, 1
+      %3 = icmp eq i8 %2, 0
+      %4 = mul i8 %0, 3
+      %5 = add i8 %4, 1
+      %6 = lshr i8 %0, 1
+      %7 = select i1 %3, i8 %6, i8 %5
+      ret i8 %7
+    }
+expected:
+  status: sound
+  valid: true

@@ -2,6 +2,7 @@
 // Distributed under the MIT license that can be found in the LICENSE file.
 
 #include "util/concreteval.h"
+#include "util/interp.h"
 
 using namespace std;
 using namespace IR;
@@ -11,16 +12,6 @@ namespace util{
   ConcreteVal::ConcreteVal(bool poison) {
     setPoison(poison);
   }
-
-  //ConcreteVal::ConcreteVal(bool poison, llvm::APInt val) 
-  //: val(val) {
-  //  setPoison(poison);
-  //}
-
-  //ConcreteVal::ConcreteVal(bool poison, llvm::APFloat val) 
-  //: val(val) {
-  //  setPoison(poison);
-  //}
 
   ConcreteVal::~ConcreteVal() {}
 
@@ -37,65 +28,25 @@ namespace util{
     this->flags = Flags::Undef;
   }
 
-  bool ConcreteVal::isPoison(){
+  bool ConcreteVal::isPoison() const {
     return flags & Flags::Poison;
   }
 
-  bool ConcreteVal::isUndef(){
+  bool ConcreteVal::isUndef() const {
     return flags & Flags::Undef;
   }
 
-  //void ConcreteVal::setVal(ConcreteVal& v){
-  //   *this = v;
-  //}
+  ConcreteValVoid::ConcreteValVoid() : ConcreteVal(false) {}
 
-  //void ConcreteVal::setVal(llvm::APInt& v){
-  //  val = v;
-  //}
-
-  //void ConcreteVal::setVal(llvm::APFloat& v){
-  //  val = v;
-  //}
-
-  //ConcreteVal& ConcreteVal::getVal() {
-  //  return *this;
-
-  //  return *(std::get_if<llvm::APInt>(&val));
-  //}
-
-  //llvm::APFloat& ConcreteVal::getValFloat(){
-  //  return *(std::get_if<llvm::APFloat>(&val));
-  //}
-
-  void ConcreteVal::print(){
-    cout << "!!! Should not happend " << '\n';
-    //if (auto val_ptr = std::get_if<llvm::APInt>(&val)){
-    //  llvm::SmallString<40> S, U;
-    //  val_ptr->toStringUnsigned(U);
-    //  val_ptr->toStringSigned(S);
-    //  std::cout << "ConcreteVal( poison=" << isPoison() << ", " << val_ptr->getBitWidth() << "b, "
-    //            << U.c_str() << "u " << S.c_str() << "s)\n";
-    //}
-    //else if (auto val_ptr = std::get_if<llvm::APFloat>(&val)){
-    //  llvm::SmallVector<char, 16> Buffer;
-    //  val_ptr->toString(Buffer);
-    //  auto bits = val_ptr->getSizeInBits(val_ptr->getSemantics());
-    //  std::string F(Buffer.begin(),Buffer.end());
-    //  std::cout << "ConcreteVal( poison=" << isPoison() << ", " 
-    //            << bits << "b, " << F << "F)\n";
-    //}
-    //else{
-    //  UNREACHABLE();
-    //}
-    
-    return;
+  void ConcreteValVoid::print() {
+    std::cout << "ConcreteValVoid()\n";
   }
 
   ConcreteValInt::ConcreteValInt(bool poison, llvm::APInt &&val)
   : ConcreteVal(poison), val(move(val)) {
   }
 
-  llvm::APInt ConcreteValInt::getVal(){
+  llvm::APInt ConcreteValInt::getVal() const {
     return val;
   }
 
@@ -103,7 +54,7 @@ namespace util{
     val = v;
   }
 
-  bool ConcreteValInt::getBoolVal() {
+  bool ConcreteValInt::getBoolVal() const {
     return val.getBoolValue();
   }
 
@@ -260,7 +211,7 @@ namespace util{
     if (poison_res) 
       return poison_res;
 
-    auto v = new ConcreteValInt(true, llvm::APInt(lhs_int->val.getBitWidth(),0));
+    auto v = new ConcreteValInt(false, llvm::APInt(lhs_int->val.getBitWidth(),0));
     bool exact_flag = flags & BinOp::Flags::Exact;
     auto remainder = llvm::APInt();
     auto quotient = llvm::APInt();
@@ -686,6 +637,91 @@ namespace util{
     return v;
   }
 
+  ConcreteVal *ConcreteValInt::arithOverflow(ConcreteVal *lhs, ConcreteVal *rhs,
+                                             unsigned opcode) {
+    auto lhs_int = dynamic_cast<ConcreteValInt *>(lhs);
+    auto rhs_int = dynamic_cast<ConcreteValInt *>(rhs);
+    assert(lhs_int && rhs_int);
+    vector<shared_ptr<ConcreteVal>> elements;
+    if (lhs->isPoison() || rhs->isPoison()) {
+
+      elements.push_back(shared_ptr<ConcreteVal>(new ConcreteValInt(
+          true, llvm::APInt(lhs_int->val.getBitWidth(), 0))));
+      elements.push_back(
+          shared_ptr<ConcreteVal>(new ConcreteValInt(true, llvm::APInt(1, 0))));
+
+      auto v = new ConcreteValAggregate(false, move(elements));
+      return v;
+    }
+    bool ov_flag;
+    if (opcode == BinOp::SAdd_Overflow) {
+      auto ap_sum_s = lhs_int->val.sadd_ov(rhs_int->val, ov_flag);
+      elements.push_back(
+          shared_ptr<ConcreteVal>(new ConcreteValInt(false, move(ap_sum_s))));
+      auto ov_int = llvm::APInt(1, ov_flag);
+      elements.push_back(
+          shared_ptr<ConcreteVal>(new ConcreteValInt(false, move(ov_int))));
+      auto v = new ConcreteValAggregate(false, move(elements));
+      return v;
+    } else if (opcode == BinOp::UAdd_Overflow) {
+      auto ap_sum_u = lhs_int->val.uadd_ov(rhs_int->val, ov_flag);
+      elements.push_back(
+          shared_ptr<ConcreteVal>(new ConcreteValInt(false, move(ap_sum_u))));
+      auto ov_int = llvm::APInt(1, ov_flag);
+      elements.push_back(
+          shared_ptr<ConcreteVal>(new ConcreteValInt(false, move(ov_int))));
+      auto v = new ConcreteValAggregate(false, move(elements));
+      return v;
+    } else if (opcode == BinOp::SSub_Overflow) {
+      auto ap_diff_s = lhs_int->val.ssub_ov(rhs_int->val, ov_flag);
+      elements.push_back(
+          shared_ptr<ConcreteVal>(new ConcreteValInt(false, move(ap_diff_s))));
+      auto ov_int = llvm::APInt(1, ov_flag);
+      elements.push_back(
+          shared_ptr<ConcreteVal>(new ConcreteValInt(false, move(ov_int))));
+      auto v = new ConcreteValAggregate(false, move(elements));
+      return v;
+    } else if (opcode == BinOp::USub_Overflow) {
+      auto ap_diff_u = lhs_int->val.usub_ov(rhs_int->val, ov_flag);
+      elements.push_back(
+          shared_ptr<ConcreteVal>(new ConcreteValInt(false, move(ap_diff_u))));
+      auto ov_int = llvm::APInt(1, ov_flag);
+      elements.push_back(
+          shared_ptr<ConcreteVal>(new ConcreteValInt(false, move(ov_int))));
+      auto v = new ConcreteValAggregate(false, move(elements));
+      return v; 
+    } else if (opcode == BinOp::SMul_Overflow) {
+      auto ap_mul_s = lhs_int->val.smul_ov(rhs_int->val, ov_flag);
+      elements.push_back(
+          shared_ptr<ConcreteVal>(new ConcreteValInt(false, move(ap_mul_s))));
+      auto ov_int = llvm::APInt(1, ov_flag);
+      elements.push_back(
+          shared_ptr<ConcreteVal>(new ConcreteValInt(false, move(ov_int))));
+      auto v = new ConcreteValAggregate(false, move(elements));
+      return v;
+    } else if (opcode == BinOp::UMul_Overflow) {
+      auto ap_mul_u = lhs_int->val.umul_ov(rhs_int->val, ov_flag);
+      elements.push_back(
+          shared_ptr<ConcreteVal>(new ConcreteValInt(false, move(ap_mul_u))));
+      auto ov_int = llvm::APInt(1, ov_flag);
+      elements.push_back(
+          shared_ptr<ConcreteVal>(new ConcreteValInt(false, move(ov_int))));
+      auto v = new ConcreteValAggregate(false, move(elements));
+      return v;
+    } else if (opcode == BinOp::SMul_Overflow) {
+      auto ap_mul_u = lhs_int->val.smul_ov(rhs_int->val, ov_flag);
+      elements.push_back(
+          shared_ptr<ConcreteVal>(new ConcreteValInt(false, move(ap_mul_u))));
+      auto ov_int = llvm::APInt(1, ov_flag);
+      elements.push_back(
+          shared_ptr<ConcreteVal>(new ConcreteValInt(false, move(ov_int))));
+      auto v = new ConcreteValAggregate(false, move(elements));
+      return v;
+    } 
+    
+    UNREACHABLE();
+  }
+
   ConcreteVal* ConcreteValInt::ctpop(ConcreteVal* op) {
     auto op_int = dynamic_cast<ConcreteValInt *>(op);// num
     assert(op_int);
@@ -771,24 +807,17 @@ namespace util{
     return v;
   }
 
-  ConcreteVal* ConcreteValInt::select(ConcreteVal* cond, ConcreteVal* a, ConcreteVal* b) {
+  shared_ptr<ConcreteVal> ConcreteValInt::select(ConcreteVal *cond,
+                                                 shared_ptr<ConcreteVal> &a,
+                                                 shared_ptr<ConcreteVal> &b) {
     auto cond_int = dynamic_cast<ConcreteValInt *>(cond);
-    auto a_int = dynamic_cast<ConcreteValInt *>(a);
-    auto b_int = dynamic_cast<ConcreteValInt *>(b);
-    assert(cond_int && a_int && b_int);
-    auto poison_res = evalPoison(cond_int, a_int, b_int);
-    if (poison_res) 
-      return poison_res;
-
-    if (cond_int->getBoolVal()) {
-      auto v = new ConcreteValInt(*a_int);
-      return v;
-    }
-    else {
-      auto v = new ConcreteValInt(*b_int);
-      return v;
-    }
-    UNREACHABLE();
+    assert(cond_int);
+    // The result is only poison if cond or the selected value is poison; the
+    // other value doesn't matter.
+    auto poison_res = evalPoison(cond_int);
+    if (poison_res)
+      return shared_ptr<ConcreteVal>(poison_res);
+    return cond_int->getBoolVal() ? a : b;
   }
 
   ConcreteVal* ConcreteValInt::icmp(ConcreteVal* a, ConcreteVal* b, unsigned cond) {
@@ -847,12 +876,51 @@ namespace util{
     UNREACHABLE();
   }
 
+  ConcreteVal *ConcreteValInt::fshl(ConcreteVal *a, ConcreteVal *b,
+                                    ConcreteVal *c) {
+    auto a_int = dynamic_cast<ConcreteValInt *>(a);
+    auto b_int = dynamic_cast<ConcreteValInt *>(b);
+    auto c_int = dynamic_cast<ConcreteValInt *>(c);
+    assert(a_int && b_int && c_int);
+    auto op_bitwidth = c_int->val.getBitWidth();
+    auto poison_res = evalPoison(a, b, c);
+
+    if (poison_res)
+      return poison_res;
+
+    auto shift_amt = c_int->val.urem(op_bitwidth);
+    auto tmp_val = a_int->val.concat(b_int->val).shl(shift_amt);
+    auto res_val =
+        tmp_val.extractBits(op_bitwidth, tmp_val.getBitWidth() - op_bitwidth);
+    auto v = new ConcreteValInt(false, move(res_val));
+    return v;
+  }
+
+  ConcreteVal *ConcreteValInt::fshr(ConcreteVal *a, ConcreteVal *b,
+                                    ConcreteVal *c) {
+    auto a_int = dynamic_cast<ConcreteValInt *>(a);
+    auto b_int = dynamic_cast<ConcreteValInt *>(b);
+    auto c_int = dynamic_cast<ConcreteValInt *>(c);
+    assert(a_int && b_int && c_int);
+    auto op_bitwidth = c_int->val.getBitWidth();
+    auto poison_res = evalPoison(a, b, c);
+
+    if (poison_res)
+      return poison_res;
+
+    auto shift_amt = c_int->val.urem(op_bitwidth);
+    auto tmp_val = a_int->val.concat(b_int->val).lshr(shift_amt);
+    auto res_val = tmp_val.extractBits(op_bitwidth, 0);
+    auto v = new ConcreteValInt(false, move(res_val));
+    return v;
+  }
+
   ConcreteValFloat::ConcreteValFloat(bool poison, llvm::APFloat &&val)
   : ConcreteVal(poison), val(move(val)) {
 
   }
 
-  llvm::APFloat ConcreteValFloat::getVal(){
+  llvm::APFloat ConcreteValFloat::getVal() const {
     return val;
   }
 
@@ -956,8 +1024,8 @@ namespace util{
       return fmath_input_res;
 
     auto v = new ConcreteValFloat(false, llvm::APFloat(lhs_float->val));
-    auto status = v->val.add(rhs_float->val, llvm::APFloatBase::rmNearestTiesToEven);
-    assert(status == llvm::APFloatBase::opOK);
+    v->val.add(rhs_float->val, llvm::APFloatBase::rmNearestTiesToEven);
+    // assert(status == llvm::APFloatBase::opOK);
     unOPEvalFmath(v, fmath);
     return v;
     
@@ -1030,7 +1098,7 @@ namespace util{
     
     auto v = new ConcreteValFloat(false, llvm::APFloat(op_float->val));
     v->val.roundToIntegral(llvm::RoundingMode::TowardNegative);
-    // CHECK can this every be true?
+    // CHECK can this ever be true?
     unOPEvalFmath(v, fmath);
     return v;   
   }
@@ -1084,7 +1152,7 @@ namespace util{
     
     auto v = new ConcreteValFloat(false, llvm::APFloat(op_float->val));
     v->val.roundToIntegral(llvm::RoundingMode::TowardZero);
-    // CHECK can this every be true?
+    // CHECK can this ever be true?
     unOPEvalFmath(v, fmath);
     return v;   
   }
@@ -1103,8 +1171,8 @@ namespace util{
       return fmath_input_res;
 
     auto v = new ConcreteValFloat(false, llvm::APFloat(lhs_float->val));
-    auto status = v->val.subtract(rhs_float->val, llvm::APFloatBase::rmNearestTiesToEven);
-    assert(status == llvm::APFloatBase::opOK);
+    v->val.subtract(rhs_float->val, llvm::APFloatBase::rmNearestTiesToEven);
+    //assert(status == llvm::APFloatBase::opOK);
     unOPEvalFmath(v, fmath);
     return v;
     
@@ -1124,8 +1192,8 @@ namespace util{
       return fmath_input_res;
 
     auto v = new ConcreteValFloat(false, llvm::APFloat(lhs_float->val));
-    auto status = v->val.multiply(rhs_float->val, llvm::APFloatBase::rmNearestTiesToEven);
-    assert(status == llvm::APFloatBase::opOK);
+    v->val.multiply(rhs_float->val, llvm::APFloatBase::rmNearestTiesToEven);
+    //assert(status == llvm::APFloatBase::opOK);
     unOPEvalFmath(v, fmath);
     return v;
     
@@ -1145,8 +1213,8 @@ namespace util{
       return fmath_input_res;
 
     auto v = new ConcreteValFloat(false, llvm::APFloat(lhs_float->val));
-    auto status = v->val.divide(rhs_float->val, llvm::APFloatBase::rmNearestTiesToEven);
-    assert(status == llvm::APFloatBase::opOK);
+    v->val.divide(rhs_float->val, llvm::APFloatBase::rmNearestTiesToEven);
+    //assert(status == llvm::APFloatBase::opOK);
     unOPEvalFmath(v, fmath);
     return v;
     
@@ -1166,8 +1234,8 @@ namespace util{
       return fmath_input_res;
 
     auto v = new ConcreteValFloat(false, llvm::APFloat(lhs_float->val));
-    auto status = v->val.mod(rhs_float->val);
-    assert(status == llvm::APFloatBase::opOK);
+    v->val.mod(rhs_float->val);
+    //assert(status == llvm::APFloatBase::opOK);
     unOPEvalFmath(v, fmath);
     return v;
     
@@ -1325,26 +1393,6 @@ namespace util{
     return v; 
   }
 
-   ConcreteVal* ConcreteValFloat::select(ConcreteVal* cond, ConcreteVal* a, ConcreteVal* b) {
-    auto cond_int = dynamic_cast<ConcreteValInt *>(cond);
-    auto a_float = dynamic_cast<ConcreteValFloat *>(a);
-    auto b_float = dynamic_cast<ConcreteValFloat *>(b);
-    assert(cond_int && a_float && b_float);
-    auto poison_res = evalPoison(cond_int, a_float, b_float);
-    if (poison_res) 
-      return poison_res;
-
-    if (cond_int->getBoolVal()) {
-      auto v = new ConcreteValFloat(*a_float);
-      return v;
-    }
-    else {
-      auto v = new ConcreteValFloat(*b_float);
-      return v;
-    }
-    UNREACHABLE();
-  }
-
   void ConcreteValFloat::print() { 
     llvm::SmallVector<char, 16> Buffer;
     val.toString(Buffer);
@@ -1354,102 +1402,438 @@ namespace util{
               << bits << "b, " << F << "F)\n";
   }
 
-  ConcreteValVect::ConcreteValVect(bool poison, std::vector<ConcreteVal*> &&elements)
-  : ConcreteVal(poison), elements(move(elements)) {
-    assert(this->elements.size() > 0);
+  ConcreteValAggregate::ConcreteValAggregate(
+      bool poison, std::vector<shared_ptr<ConcreteVal>> &&elements)
+      : ConcreteVal(poison), elements(move(elements)) {}
+
+  const vector<shared_ptr<ConcreteVal>> &ConcreteValAggregate::getVal() const {
+    return elements;
   }
 
-  ConcreteValVect::ConcreteValVect(bool poison, const IR::Value* vect_val)
-  : ConcreteVal(poison) {
-    assert(vect_val->getType().isVectorType());
-    auto vect_type_ptr = dynamic_cast<const VectorType *>(&vect_val->getType());
-    // I don't think vector type can have padding
-    assert(vect_type_ptr->numPaddingsConst() == 0);
-    auto bitwidth =  vect_type_ptr->getChild(0).bits();
-    auto isIntTy = vect_type_ptr->getChild(0).isIntType();
-    
-    for (unsigned int i=0; i < vect_type_ptr->numElementsConst(); ++i) {
-      if (isIntTy){
-        auto *v = new ConcreteValInt(false, llvm::APInt(bitwidth, 3));
-        elements.push_back(v);
-      }
-      else{
-        assert( "Error: vector type not supported yet!" && false );
-      }  
-    }
-
+  ConcreteValAggregate::~ConcreteValAggregate() {
   }
 
-  //ConcreteValVect::ConcreteValVect(ConcreteValVect &l){
-  //  cout << "copy ctor concreteValVect" << '\n';
-  //}
-//
-  //ConcreteValVect& ConcreteValVect::operator=(ConcreteValVect &l) {
-  //  cout << "assign op concreteValVect" << '\n';
-  //  return *this;
-  //}
-//
-  //ConcreteValVect::ConcreteValVect(ConcreteValVect &&l){
-  //  cout << "move ctor concreteValVect" << '\n';
-  //}
-//
-  //ConcreteValVect& ConcreteValVect::operator=(ConcreteValVect &&l) {
-  //  cout << "move assign op concreteValVect" << '\n';
-  //  return *this;
-  //}
-
-  ConcreteValVect& ConcreteValVect::getVal() {
-    return *this;
-  }
-
-  ConcreteValVect::~ConcreteValVect(){
-    for (auto elem : elements) {
-      delete elem;
-    }
-    elements.clear();
-  }
-
-  //ConcreteValVect::ConcreteValVect(bool poison, std::vector<ConcreteVal*> &elements)
-  //: ConcreteVal(poison), elements(elements) {
-  //  assert(elements.size() > 0);
-  //}
-
-  vector<ConcreteVal*> ConcreteValVect::make_elements(const Value* vect_val) {
-    assert(vect_val->getType().isVectorType());
-    
-    auto vect_type_ptr = dynamic_cast<const VectorType *>(&vect_val->getType());
-    // I don't think vector type can have padding
-    assert(vect_type_ptr->numPaddingsConst() == 0);
-    //vect
-    cout << "vect_num_elem: " << vect_type_ptr->numElementsConst() << '\n';
-    //cout << ptr->numElementsConst() << "," << ptr->bits() 
-    //  << "," << ptr->getChild(0).bits() << '\n';
-    vector<ConcreteVal*> res(vect_type_ptr->numElementsConst());
-    auto bitwidth =  vect_type_ptr->getChild(0).bits();
-    auto isIntTy = vect_type_ptr->getChild(0).isIntType();
-    for (unsigned int i=0; i < res.size(); ++i) {
-      if (isIntTy){
-        res[i] = new ConcreteValInt(false, llvm::APInt(bitwidth, 3));
-      }
-      else{
-        assert( "ERROR: underlying vector type not supported yet!" && false );
-      }  
-    }
-  
-    return res;
-  }
-
-  unique_ptr<vector<ConcreteVal*>> ConcreteValVect::make_elements_unique(Value* vect_val){
-    auto res = make_unique<vector<ConcreteVal*>>();
-    return res;
-  }
-
-  void ConcreteValVect::print() {
+  void ConcreteValAggregate::print() {
     cout << "<" << '\n';
-    for (auto elem : elements) {
+    for (auto &elem : elements) {
       elem->print();
     }
     cout << ">" << '\n';
   }
 
+  ConcreteVal *ConcreteValAggregate::evalBinOp(ConcreteVal *lhs,
+                                               ConcreteVal *rhs,
+                                               unsigned opcode, unsigned flags,
+                                               Interpreter &interpreter) {
+    auto lhs_vect = dynamic_cast<ConcreteValAggregate *>(lhs);
+    auto rhs_vect = dynamic_cast<ConcreteValAggregate *>(rhs);
+    assert(lhs_vect && rhs_vect);
+    assert(lhs_vect->elements.size() == rhs_vect->elements.size());
+    vector<shared_ptr<ConcreteVal>> elements;
+
+    if (opcode == BinOp::Op::SAdd_Overflow ||
+        opcode == BinOp::Op::UAdd_Overflow ||
+        opcode == BinOp::Op::SSub_Overflow ||
+        opcode == BinOp::Op::USub_Overflow || 
+        opcode == BinOp::Op::SMul_Overflow ||
+        opcode == BinOp::Op::UMul_Overflow) {
+      auto res = arithOverflow(lhs_vect, rhs_vect, opcode);
+      // if (res)
+      //   res->print(); // TEMP
+      return res;
+    }
+
+    for (unsigned i = 0; i < lhs_vect->elements.size(); i++) {
+      auto lhs_elem = lhs_vect->elements[i];
+      auto rhs_elem = rhs_vect->elements[i];
+      auto int_elem = dynamic_cast<ConcreteValInt *>(lhs_elem.get());
+      assert(int_elem);
+      ConcreteVal *res_elem = nullptr;
+      switch (opcode) {
+      case BinOp::Op::Add:
+        res_elem = ConcreteValInt::add(lhs_elem.get(), rhs_elem.get(), flags);
+        break;
+      case BinOp::Op::Sub:
+        res_elem = ConcreteValInt::sub(lhs_elem.get(), rhs_elem.get(), flags);
+        break;
+      case BinOp::Op::Mul:
+        res_elem = ConcreteValInt::mul(lhs_elem.get(), rhs_elem.get(), flags);
+        break;
+      case BinOp::Op::SDiv:
+        res_elem = ConcreteValInt::sdiv(lhs_elem.get(), rhs_elem.get(), flags,
+                                        interpreter.UB_flag);
+        break;
+      case BinOp::Op::UDiv:
+        res_elem = ConcreteValInt::udiv(lhs_elem.get(), rhs_elem.get(), flags,
+                                        interpreter.UB_flag);
+        break;
+      case BinOp::Op::SRem:
+        res_elem = ConcreteValInt::srem(lhs_elem.get(), rhs_elem.get(), flags,
+                                        interpreter.UB_flag);
+        break;
+      case BinOp::Op::URem:
+        res_elem = ConcreteValInt::urem(lhs_elem.get(), rhs_elem.get(), flags,
+                                        interpreter.UB_flag);
+        break;
+      case BinOp::Op::SAdd_Sat:
+        res_elem =
+            ConcreteValInt::sAddSat(lhs_elem.get(), rhs_elem.get(), flags);
+        break;
+      case BinOp::Op::UAdd_Sat:
+        res_elem =
+            ConcreteValInt::uAddSat(lhs_elem.get(), rhs_elem.get(), flags);
+        break;
+      case BinOp::Op::SSub_Sat:
+        res_elem =
+            ConcreteValInt::sSubSat(lhs_elem.get(), rhs_elem.get(), flags);
+        break;
+      case BinOp::Op::USub_Sat:
+        res_elem =
+            ConcreteValInt::uSubSat(lhs_elem.get(), rhs_elem.get(), flags);
+        break;
+      case BinOp::Op::SShl_Sat:
+        res_elem =
+            ConcreteValInt::sShlSat(lhs_elem.get(), rhs_elem.get(), flags);
+        break;
+      case BinOp::Op::UShl_Sat:
+        res_elem =
+            ConcreteValInt::uShlSat(lhs_elem.get(), rhs_elem.get(), flags);
+        break;
+      case BinOp::Op::And:
+        res_elem = ConcreteValInt::andOp(lhs_elem.get(), rhs_elem.get());
+        break;
+      case BinOp::Op::Or:
+        res_elem = ConcreteValInt::orOp(lhs_elem.get(), rhs_elem.get());
+        break;
+      case BinOp::Op::Xor:
+        res_elem = ConcreteValInt::xorOp(lhs_elem.get(), rhs_elem.get());
+        break;
+      case BinOp::Op::Abs:
+        res_elem = ConcreteValInt::abs(lhs_elem.get(), rhs_elem.get());
+        break;
+      case BinOp::Op::LShr:
+        res_elem = ConcreteValInt::lshr(lhs_elem.get(), rhs_elem.get(), flags);
+        break;
+      case BinOp::Op::AShr:
+        res_elem = ConcreteValInt::ashr(lhs_elem.get(), rhs_elem.get(), flags);
+        break;
+      case BinOp::Op::Shl:
+        res_elem = ConcreteValInt::shl(lhs_elem.get(), rhs_elem.get(), flags);
+        break;
+      case BinOp::Op::Cttz:
+        res_elem = ConcreteValInt::cttz(lhs_elem.get(), rhs_elem.get(), flags);
+        break;
+      case BinOp::Op::Ctlz:
+        res_elem = ConcreteValInt::ctlz(lhs_elem.get(), rhs_elem.get(), flags);
+        break;
+      default:
+        res_elem = nullptr;
+        break;
+      }
+
+      if (!res_elem) {
+        return nullptr;
+      }
+
+      elements.push_back(shared_ptr<ConcreteVal>(res_elem));
+    }
+    auto res = new ConcreteValAggregate(false, move(elements));
+    res->print(); // TEMP
+    return res;
+  }
+
+  ConcreteVal *ConcreteValAggregate::evalFPBinOp(ConcreteVal *lhs,
+                                                 ConcreteVal *rhs,
+                                                 unsigned opcode, 
+                                                 IR::FastMathFlags fmath,
+                                                 Interpreter &interpreter) {
+    auto lhs_vect = dynamic_cast<ConcreteValAggregate *>(lhs);
+    auto rhs_vect = dynamic_cast<ConcreteValAggregate *>(rhs);
+    assert(lhs_vect && rhs_vect);
+    assert(lhs_vect->elements.size() == rhs_vect->elements.size());
+    vector<shared_ptr<ConcreteVal>> elements;
+
+    for (unsigned i = 0; i < lhs_vect->elements.size(); i++) {
+      auto lhs_elem = lhs_vect->elements[i];
+      auto rhs_elem = rhs_vect->elements[i];
+      auto float_elem = dynamic_cast<ConcreteValFloat *>(lhs_elem.get());
+      assert(float_elem);
+      ConcreteVal *res_elem = nullptr;
+      switch (opcode) {
+      case FpBinOp::Op::FAdd:
+        res_elem =
+            ConcreteValFloat::fadd(lhs_elem.get(), rhs_elem.get(), fmath);
+        break;
+      case FpBinOp::Op::FSub:
+        res_elem =
+            ConcreteValFloat::fsub(lhs_elem.get(), rhs_elem.get(), fmath);
+        break;
+      case FpBinOp::Op::FMul:
+        res_elem =
+            ConcreteValFloat::fmul(lhs_elem.get(), rhs_elem.get(), fmath);
+        break;
+      case FpBinOp::Op::FDiv:
+        res_elem =
+            ConcreteValFloat::fdiv(lhs_elem.get(), rhs_elem.get(), fmath);
+        break;
+      case FpBinOp::Op::FRem:
+        res_elem =
+            ConcreteValFloat::frem(lhs_elem.get(), rhs_elem.get(), fmath);
+        break;
+      case FpBinOp::Op::FMax:
+        res_elem =
+            ConcreteValFloat::fmax(lhs_elem.get(), rhs_elem.get(), fmath);
+        break;
+      case FpBinOp::Op::FMin:
+        res_elem =
+            ConcreteValFloat::fmin(lhs_elem.get(), rhs_elem.get(), fmath);
+        break;
+      case FpBinOp::Op::FMaximum:
+        res_elem =
+            ConcreteValFloat::fmaximum(lhs_elem.get(), rhs_elem.get(), fmath);
+        break;
+      case FpBinOp::Op::FMinimum:
+        res_elem =
+            ConcreteValFloat::fminimum(lhs_elem.get(), rhs_elem.get(), fmath);
+        break;
+      default:
+        res_elem = nullptr;
+        break;
+      }
+
+      if (!res_elem) {
+        return nullptr;
+      }
+
+      elements.push_back(shared_ptr<ConcreteVal>(res_elem));
+    }
+    auto res = new ConcreteValAggregate(false, move(elements));
+    res->print(); // TEMP
+    return res;
+  }
+
+  ConcreteVal *ConcreteValAggregate::icmp(ConcreteVal *a, ConcreteVal *b,
+                                          unsigned cond, unsigned pcmode,
+                                          Interpreter &interpreter) {
+    auto lhs_vect = dynamic_cast<ConcreteValAggregate *>(a);
+    auto rhs_vect = dynamic_cast<ConcreteValAggregate *>(b);
+    assert(lhs_vect && rhs_vect);
+    assert(lhs_vect->elements.size() > 0 &&
+           lhs_vect->elements.size() == rhs_vect->elements.size());
+    auto first_elem = lhs_vect->elements[0].get();
+    auto int_elem = dynamic_cast<ConcreteValInt *>(first_elem);
+    auto ptr_elem = dynamic_cast<ConcreteValPointer *>(first_elem);
+    assert((int_elem || ptr_elem) &&
+           "icmp vector elements must either have int or pointer type");
+    vector<shared_ptr<ConcreteVal>> elements;
+    bool all_poison = true;
+    for (unsigned i = 0; i < lhs_vect->elements.size(); i++) {
+      auto lhs_elem = lhs_vect->elements[i];
+      auto rhs_elem = rhs_vect->elements[i];
+      if (int_elem) {
+        auto res_elem =
+            ConcreteValInt::icmp(lhs_elem.get(), rhs_elem.get(), cond);
+        elements.push_back(shared_ptr<ConcreteVal>(res_elem));
+        if (!res_elem->isPoison()) {
+          all_poison = false;
+        }
+      } else { // TODO: add support for pointer comparison
+        interpreter.setUnsupported(
+            "icmp vector pointer type not supported yet");
+        return nullptr;
+      }
+    }
+
+    return new ConcreteValAggregate(all_poison, move(elements));
+  }
+
+  ConcreteValAggregate *
+  ConcreteValAggregate::arithOverflow(ConcreteValAggregate *lhs_vect,
+                                      ConcreteValAggregate *rhs_vect,
+                                      unsigned opcode) {
+
+    vector<shared_ptr<ConcreteVal>> res_elements;
+    vector<shared_ptr<ConcreteVal>> ov_elements;
+    for (unsigned i = 0; i < lhs_vect->elements.size(); i++) {
+      auto lhs_elem = lhs_vect->elements[i];
+      auto rhs_elem = rhs_vect->elements[i];
+      auto lhs_int = dynamic_cast<ConcreteValInt *>(lhs_elem.get());
+      auto rhs_int = dynamic_cast<ConcreteValInt *>(rhs_elem.get());
+      assert(lhs_int && rhs_int && "sAddOverflow vector elements must have int type");
+
+      if (lhs_int->isPoison() || rhs_int->isPoison()) {
+
+        res_elements.push_back(shared_ptr<ConcreteVal>(new ConcreteValInt(
+            true, llvm::APInt(lhs_int->getVal().getBitWidth(), 0))));
+        ov_elements.push_back(shared_ptr<ConcreteVal>(
+            new ConcreteValInt(true, llvm::APInt(1, 0))));
+        continue;
+      }
+
+      bool ov_flag;
+      llvm::APInt ap_res;
+      if (opcode == BinOp::SAdd_Overflow) {
+        ap_res = lhs_int->getVal().sadd_ov(rhs_int->getVal(), ov_flag);
+      } else if (opcode == BinOp::UAdd_Overflow) {
+        ap_res = lhs_int->getVal().uadd_ov(rhs_int->getVal(), ov_flag);
+      } else if (opcode == BinOp::SSub_Overflow) {
+        ap_res = lhs_int->getVal().ssub_ov(rhs_int->getVal(), ov_flag);
+      } else if (opcode == BinOp::USub_Overflow) {
+        ap_res = lhs_int->getVal().usub_ov(rhs_int->getVal(), ov_flag);
+      } else if (opcode == BinOp::SMul_Overflow) {
+        ap_res = lhs_int->getVal().smul_ov(rhs_int->getVal(), ov_flag);
+      } else if (opcode == BinOp::UMul_Overflow) {
+        ap_res = lhs_int->getVal().umul_ov(rhs_int->getVal(), ov_flag);
+      } else {
+        assert(false && "unsupported arithmetic overflow operation");
+      }
+      res_elements.push_back(shared_ptr<ConcreteVal>(new ConcreteValInt(false, move(ap_res))));
+      auto ov_int = llvm::APInt(1, ov_flag);
+      ov_elements.push_back(shared_ptr<ConcreteVal>(new ConcreteValInt(false, move(ov_int))));
+    }
+
+    auto res_vect = new ConcreteValAggregate(false, move(res_elements));
+    auto ov_vect = new ConcreteValAggregate(false, move(ov_elements));
+    vector<shared_ptr<ConcreteVal>> v_vect;
+    v_vect.push_back(shared_ptr<ConcreteVal>(res_vect));
+    v_vect.push_back(shared_ptr<ConcreteVal>(ov_vect));
+    auto v = new ConcreteValAggregate(false, move(v_vect));
+    return v;
+  }
+
+  ConcreteValPointer::ConcreteValPointer()
+      : ConcreteVal(false), bid(0), offset(0) {}
+
+  ConcreteValPointer::ConcreteValPointer(bool poison, unsigned bid,
+                                         std::int64_t offset, bool is_local)
+      : ConcreteVal(poison), bid(bid), offset(offset), is_local(is_local) {}
+
+  unsigned ConcreteValPointer::getBid() const {
+    return bid;
+  }
+
+  bool ConcreteValPointer::getIsLocal() const {
+    return is_local;
+  }
+
+  std::int64_t ConcreteValPointer::getOffset() const {
+    return offset;
+  }
+
+  void ConcreteValPointer::setOffset(std::int64_t offset) {
+    this->offset = offset;
+  }
+
+  void ConcreteValPointer::print() {
+    cout << "pointer(poison=" << isPoison() << ", block_id=" << bid << ", offset=" << offset << ", is_local=" << is_local << ")\n";
+  }
+
+  ConcreteVal *ConcreteValPointer::evalPoison(ConcreteVal *lhs,
+                                              ConcreteVal *rhs) {
+    
+    if (lhs->isPoison() || rhs->isPoison()) {
+      auto v = new ConcreteValInt(true, llvm::APInt(1,1));
+      v->setPoison(true);
+      return v;
+    }
+    return nullptr;
+  }
+
+  bool ConcreteValPointer::icmp_cmp(llvm::APInt &lhs, llvm::APInt &rhs,
+                                    unsigned cond) {
+    bool icmp_res = false;
+    switch (cond) {
+    case ICmp::Cond::EQ:
+      icmp_res = lhs.eq(rhs);
+      break;
+    case ICmp::Cond::NE:
+      icmp_res = lhs.ne(rhs);
+      break;
+    case ICmp::Cond::SLE:
+      icmp_res = lhs.sle(rhs);
+      break;
+    case ICmp::Cond::SLT:
+      icmp_res = lhs.slt(rhs);
+      break;
+    case ICmp::Cond::SGE:
+      icmp_res = lhs.sge(rhs);
+      break;
+    case ICmp::Cond::SGT:
+      icmp_res = lhs.sgt(rhs);
+      break;
+    case ICmp::Cond::ULE:
+      icmp_res = lhs.ule(rhs);
+      break;
+    case ICmp::Cond::ULT:
+      icmp_res = lhs.ult(rhs);
+      break;
+    case ICmp::Cond::UGE:
+      icmp_res = lhs.uge(rhs);
+      break;
+    case ICmp::Cond::UGT:
+      icmp_res = lhs.ugt(rhs);
+      break;
+    case ICmp::Cond::Any:
+      UNREACHABLE();
+    }
+    return icmp_res;
+
+    UNREACHABLE();
+  }
+
+  static uint64_t compute_ptr_address(ConcreteValPointer *ptr, bool &ov,
+                                      Interpreter &interpreter) {
+    auto &ptr_block = interpreter.getBlock(ptr->getBid(), ptr->getIsLocal());
+    uint64_t addr = 0;
+    ov = __builtin_uaddl_overflow(ptr_block.address, ptr->getOffset(), &addr);
+    return addr;
+  }
+
+  ConcreteVal *ConcreteValPointer::icmp(ConcreteVal *a, ConcreteVal *b,
+                                        unsigned cond, unsigned pcmode,
+                                        Interpreter &interpreter) {
+    auto a_ptr = dynamic_cast<ConcreteValPointer *>(a);
+    auto b_ptr = dynamic_cast<ConcreteValPointer *>(b);
+    assert(a_ptr && b_ptr);
+    auto poison_res = evalPoison(a_ptr, b_ptr);
+    if (poison_res)
+      return poison_res;
+
+    bool lhs_ov = false;
+    bool rhs_ov = false;
+    bool icmp_res = false;
+
+    if (pcmode == ICmp::PtrCmpMode::INTEGRAL) {
+      auto lhs_addr = compute_ptr_address(a_ptr, lhs_ov, interpreter);
+      auto rhs_addr = compute_ptr_address(b_ptr, rhs_ov, interpreter);
+      if (lhs_ov || rhs_ov) {
+        interpreter.UB_flag = true;
+        return nullptr;
+      } else {
+        auto lhs_val = llvm::APInt(64, lhs_addr);
+        auto rhs_val = llvm::APInt(64, rhs_addr);
+        icmp_res = icmp_cmp(lhs_val, rhs_val, cond);
+      }
+    } else if (pcmode == ICmp::PtrCmpMode::PROVENANCE) {
+      assert(cond == ICmp::Cond::EQ || cond == ICmp::Cond::NE);
+      icmp_res = cond == ICmp::Cond::EQ ? *a_ptr == *b_ptr : *a_ptr != *b_ptr;
+    } else if (pcmode == ICmp::PtrCmpMode::OFFSETONLY) {
+      auto lhs_val = llvm::APInt(64, a_ptr->getOffset());
+      auto rhs_val = llvm::APInt(64, a_ptr->getOffset());
+      icmp_res = icmp_cmp(lhs_val, rhs_val, cond);
+    } else {
+      assert(false && "icmp unsupported pointer comparison mode");
+    }
+    cout << "icmp res = " << icmp_res << '\n';
+    if (icmp_res) {
+      auto v = new ConcreteValInt(false, llvm::APInt(1, 1));
+      return v;
+    } else {
+      auto v = new ConcreteValInt(false, llvm::APInt(1, 0));
+      return v;
+    }
+
+    UNREACHABLE();
+  }
 }
+

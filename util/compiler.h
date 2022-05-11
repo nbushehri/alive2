@@ -36,6 +36,9 @@ struct const_strip_unique_ptr {
     const auto& operator*() const { return *I->get(); }
     const_iterator operator++(void) { return ++I; }
     bool operator!=(const const_iterator &other) const { return I != other.I; }
+    const_iterator operator+(unsigned i) {
+      return I + i;
+    }
   };
 
   const_iterator begin() const { return container.begin(); }

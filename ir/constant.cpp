@@ -21,7 +21,7 @@ IntConst::IntConst(Type &type, int64_t val)
   : Constant(type, to_string(val)), val(val) {}
 
 IntConst::IntConst(Type &type, string &&val)
-  : Constant(type, string(val)), val(move(val)) {}
+  : Constant(type, string(val)), val(std::move(val)) {}
 
 StateValue IntConst::toSMT(State &s) const {
   if (auto v = get_if<int64_t>(&val))
@@ -43,11 +43,8 @@ expr IntConst::getTypeConstraints() const {
 FloatConst::FloatConst(Type &type, double val)
   : Constant(type, to_string(val)), val(val) {}
 
-FloatConst::FloatConst(Type &type, uint64_t val)
-  : Constant(type, to_string(val)), val(val) {}
-
-FloatConst::FloatConst(Type &type, string val)
-  : Constant(type, string(val)), val(move(val)) {}
+FloatConst::FloatConst(Type &type, string val, bool bit_value)
+  : Constant(type, string(val)), val(std::move(val)), bit_value(bit_value) {}
 
 expr FloatConst::getTypeConstraints() const {
   return Value::getTypeConstraints() &&
@@ -55,15 +52,14 @@ expr FloatConst::getTypeConstraints() const {
 }
 
 StateValue FloatConst::toSMT(State &s) const {
-  if (auto n = get_if<uint64_t>(&val)) {
-    return { expr::mkUInt(*n, getType().bits())
+  if (auto n = get_if<string>(&val)) {
+    if (!bit_value)
+      return { expr::mkNumber(n->c_str(), getType().getDummyValue(true).value),
+               true };
+    return { expr::mkNumber(n->c_str(), expr::mkUInt(0, getType().bits()))
                .BV2float(getType().getDummyValue(true).value),
              true };
   }
-
-  if (auto n = get_if<string>(&val))
-    return { expr::mkNumber(n->c_str(), getType().getDummyValue(true).value),
-             true };
 
   expr e;
   double v = get<double>(val);
@@ -71,10 +67,11 @@ StateValue FloatConst::toSMT(State &s) const {
   case FloatType::Half:    e = expr::mkHalf((float)v); break;
   case FloatType::Float:   e = expr::mkFloat((float)v); break;
   case FloatType::Double:  e = expr::mkDouble(v); break;
+  case FloatType::BFloat:  e = expr::mkBFloat((float)v); break;
   case FloatType::Quad:
   case FloatType::Unknown: UNREACHABLE();
   }
-  return { move(e), true };
+  return { std::move(e), true };
 }
 
 
@@ -103,7 +100,7 @@ ConstantBinOp::ConstantBinOp(Type &type, Constant &lhs, Constant &rhs, Op op)
   str += opname;
   str += rhs.getName();
   str += ')';
-  this->setName(move(str));
+  this->setName(std::move(str));
 }
 
 static void div_ub(const expr &a, const expr &b, State &s, bool sign) {
@@ -129,7 +126,7 @@ StateValue ConstantBinOp::toSMT(State &s) const {
     div_ub(a, b, s, false);
     break;
   }
-  return { move(val), ap && bp };
+  return { std::move(val), ap && bp };
 }
 
 expr ConstantBinOp::getTypeConstraints() const {
@@ -141,7 +138,7 @@ expr ConstantBinOp::getTypeConstraints() const {
 
 
 ConstantFn::ConstantFn(Type &type, string_view name, vector<Value*> &&args)
-  : Constant(type, ""), args(move(args)) {
+  : Constant(type, ""), args(std::move(args)) {
   unsigned num_args;
   if (name == "log2") {
     fn = LOG2;
@@ -168,7 +165,7 @@ ConstantFn::ConstantFn(Type &type, string_view name, vector<Value*> &&args)
     str += arg->getName();
   }
   str += ')';
-  this->setName(move(str));
+  this->setName(std::move(str));
 }
 
 StateValue ConstantFn::toSMT(State &s) const {
@@ -182,7 +179,7 @@ StateValue ConstantFn::toSMT(State &s) const {
     r = args[0]->bits();
     break;
   }
-  return { move(r), true };
+  return { std::move(r), true };
 }
 
 expr ConstantFn::getTypeConstraints() const {

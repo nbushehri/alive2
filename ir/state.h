@@ -12,7 +12,6 @@
 #include <ostream>
 #include <set>
 #include <string>
-#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -21,12 +20,17 @@
 namespace IR {
 
 class Value;
+class JumpInstr;
 class BasicBlock;
 class Function;
 
 class State {
 public:
-  using ValTy = std::pair<StateValue, std::set<smt::expr>>;
+  struct ValTy {
+    StateValue val;
+    smt::expr domain;
+    std::set<smt::expr> undef_vars;
+  };
 
 private:
   struct CurrentDomain {
@@ -45,13 +49,19 @@ private:
     // vars that have never been used
     std::set<const Value *> unused_vars;
 
+    // Possible number of calls per function name that occurred so far
+    // This is an over-approximation, union over all predecessors
     struct FnCallRanges
-      : public std::map<std::string, std::pair<unsigned, unsigned>> {
+      // bool records whether fn only accesses inaccessible/args memory only
+      : public std::map<std::string, std::pair<std::set<unsigned>, bool>> {
+      void inc(const std::string &name, bool inaccessible_or_args_memonly);
       bool overlaps(const FnCallRanges &other) const;
+      // remove all ranges but name
+      FnCallRanges project(const std::string &name) const;
     };
     FnCallRanges ranges_fn_calls;
 
-    void intersect(const ValueAnalysis &other);
+    void meet_with(const ValueAnalysis &other);
   };
 
   struct VarArgsEntry {
@@ -98,7 +108,7 @@ private:
 
   std::set<smt::expr> quantified_vars;
 
-  // var -> ((value, not_poison), undef_vars)
+  // var -> ((value, not_poison), ub, undef_vars)
   std::unordered_map<const Value*, unsigned> values_map;
   std::vector<std::pair<const Value*, ValTy>> values;
 
@@ -115,6 +125,7 @@ private:
   const BasicBlock *current_bb = nullptr;
   CurrentDomain domain;
   Memory memory;
+  smt::expr fp_rounding_mode;
   std::set<smt::expr> undef_vars;
   ValueAnalysis analysis;
   std::array<StateValue, 64> tmp_values;
@@ -135,13 +146,16 @@ private:
     std::vector<Memory::PtrInput> args_ptr;
     ValueAnalysis::FnCallRanges fncall_ranges;
     Memory m;
-    bool readsmem, argmemonly;
+    bool readsmem, argmemonly, inaccessiblememonly, noret, willret;
 
     smt::expr operator==(const FnCallInput &rhs) const;
-    smt::expr refinedBy(State &s, const std::vector<StateValue> &args_nonptr,
+    smt::expr refinedBy(State &s, unsigned modifies_bid,
+                        const std::vector<StateValue> &args_nonptr,
                         const std::vector<Memory::PtrInput> &args_ptr,
                         const ValueAnalysis::FnCallRanges &fncall_ranges,
-                        const Memory &m, bool readsmem, bool argmemonly) const;
+                        const Memory &m, bool readsmem, bool argmemonly,
+                        bool inaccessiblememonly, bool noret,
+                        bool willret) const;
 
     auto operator<=>(const FnCallInput &rhs) const = default;
   };
@@ -149,7 +163,9 @@ private:
   struct FnCallOutput {
     std::vector<StateValue> retvals;
     smt::expr ub;
+    smt::expr noreturns;
     Memory::CallState callstate;
+    std::vector<Memory::FnRetData> ret_data;
 
     static FnCallOutput mkIf(const smt::expr &cond, const FnCallOutput &then,
                              const FnCallOutput &els);
@@ -159,6 +175,7 @@ private:
   std::map<std::string, std::map<FnCallInput, FnCallOutput>> fn_call_data;
   smt::expr fn_call_pre = true;
   std::set<smt::expr> fn_call_qvars;
+  std::unordered_map<std::string, unsigned> inaccessiblemem_bids;
 
   VarArgsData var_args_data;
 
@@ -168,7 +185,7 @@ public:
   static void resetGlobals();
 
   /*--- Get values or update registers ---*/
-  const StateValue& exec(const Value &v);
+  const ValTy& exec(const Value &v);
   const StateValue& operator[](const Value &val);
   const StateValue& getAndAddUndefs(const Value &val);
   // If undef_ub is true, UB is also added when val was undef
@@ -195,7 +212,7 @@ public:
   void addUB(smt::expr &&ub);
   void addUB(const smt::expr &ub);
   void addUB(smt::AndExpr &&ubs);
-  void addNoReturn();
+  void addNoReturn(const smt::expr &cond);
 
   std::vector<StateValue>
     addFnCall(const std::string &name, std::vector<StateValue> &&inputs,
@@ -215,6 +232,8 @@ public:
 
   StateValue rewriteUndef(StateValue &&val,
                           const std::set<smt::expr> &undef_vars);
+  smt::expr rewriteUndef(smt::expr &&val,
+                         const std::set<smt::expr> &undef_vars);
 
   bool isInitializationPhase() const { return is_initialization_phase; }
   void finishInitializer();
@@ -222,6 +241,7 @@ public:
   auto& getFn() const { return f; }
   auto& getMemory() const { return memory; }
   auto& getMemory() { return memory; }
+  auto& getFpRoundingMode() const { return fp_rounding_mode; }
   auto& getAxioms() const { return axioms; }
   auto& getPre() const { return precondition; }
   auto& getFnPre() const { return fn_call_pre; }
@@ -230,13 +250,14 @@ public:
   const auto& getFnQuantVars() const { return fn_call_qvars; }
 
   auto& functionDomain() const { return function_domain; }
-  auto& returnDomain() const { return return_domain; }
   smt::expr sinkDomain() const;
   Memory returnMemory() const { return *return_memory(); }
 
-  std::pair<StateValue, const std::set<smt::expr>&> returnVal() const {
-    return { *return_val(), return_undef_vars };
+  ValTy returnVal() const {
+    return { *return_val(), return_domain(), return_undef_vars };
   }
+
+  smt::expr getJumpCond(const BasicBlock &src, const BasicBlock &dst) const;
 
   void startParsingPre() { disable_undef_rewrite = true; }
 

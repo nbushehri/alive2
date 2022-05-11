@@ -1,0 +1,112 @@
+---
+name: load_128
+func: alive.interpret
+args:
+  - {}
+  - !ir |
+    define i8 @src(i8* dereferenceable(1) %x) {
+      %res = load i8, i8* %x
+      ret i8 %res
+    }
+  - args: [[1,0]]
+    memory:
+      - size: 0
+        align: 0
+      - size: 3
+        align: 32
+        bytes:
+          - [0, 255, 128]
+          - [null, 0, 0]
+expected:
+  status: done
+  undefined: false
+  return_value: -128
+---
+name: load_default_55
+func: alive.interpret
+args:
+  - {}
+  - !ir |
+    define i8 @src(i8* dereferenceable(1) %x) {
+      %res = load i8, i8* %x
+      ret i8 %res
+    }
+  - args: [[1,0]]
+    memory:
+      - size: 0
+        align: 0
+      - size: 1
+        align: 8
+        bytes:
+          - [null, 255, 55]
+expected:
+  status: done
+  undefined: false
+  return_value: 55
+---
+name: load_after_block
+func: alive.interpret
+args:
+  - {}
+  - !ir |
+    define i8 @src(i8* dereferenceable(1) %x) {
+      %res = load i8, i8* %x
+      ret i8 %res
+    }
+  - args: [[1,1]]
+    memory:
+      - size: 0
+        align: 0
+      - size: 1
+        align: 8
+        bytes:
+          - [null, 255, 0]
+expected:
+  status: done
+  undefined: true
+---
+name: load_before_block
+func: alive.interpret
+args:
+  - {}
+  - !ir |
+    define i8 @src(i8* dereferenceable(1) %x) {
+      %res = load i8, i8* %x
+      ret i8 %res
+    }
+  - args: [[1,-1]]
+    memory:
+      - size: 0
+        align: 0
+      - size: 1
+        align: 8
+        bytes:
+          - [null, 255, 0]
+expected:
+  status: done
+  undefined: true
+---
+name: load_second_byte
+func: alive.interpret
+args:
+  - {}
+  - !ir |
+    define i8 @src(i8* dereferenceable(1) %x) {
+      %res = load i8, i8* %x
+      ret i8 %res
+    }
+  - args: [[1,1]]
+    memory:
+      - size: 0
+        align: 0
+      - size: 3
+        align: 4
+        bytes:
+          - [0, 255, 10]
+          - [1, 255, 11]
+          - [2, 255, 12]
+          - [null, 0, 0]
+expected:
+  status: done
+  undefined: false
+  return_value: 11

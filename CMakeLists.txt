@@ -19,7 +19,7 @@ if (MSVC)
   set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "/O2 /Oi /Zi ${CMAKE_CXX_FLAGS_RELWITHDEBINFO}")
   set(CMAKE_EXE_LINKER_FLAGS         "/LTCG:INCREMENTAL ${CMAKE_EXE_LINKER_FLAGS}")
 else()
-  set(CMAKE_CXX_FLAGS                "-Wall -Werror -march=native -fPIC ${CMAKE_CXX_FLAGS}")
+  set(CMAKE_CXX_FLAGS                "-Wall -Werror -fPIC ${CMAKE_CXX_FLAGS}")
   set(CMAKE_CXX_FLAGS_DEBUG          "-g -Og ${CMAKE_CXX_FLAGS_DEBUG}")
   set(CMAKE_CXX_FLAGS_RELEASE        "-O3 ${CMAKE_CXX_FLAGS_RELEASE}")
   set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "${CMAKE_CXX_FLAGS_RELEASE} -g ${CMAKE_CXX_FLAGS_RELWITHDEBINFO}")
@@ -42,32 +42,16 @@ endmacro(remove_flags)
 remove_flags(-DNDEBUG)
 
 list(APPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake")
+list(APPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/third_party/cmake-modules")
 
 if (CYGWIN)
   set(CMAKE_FIND_LIBRARY_SUFFIXES ".dll")
 endif()
 
-find_package(Git REQUIRED)
-add_custom_command(
-  OUTPUT "${PROJECT_BINARY_DIR}/version_gen.h.tmp"
-  COMMAND "${CMAKE_COMMAND}" -E echo_append "#define ALIVE_VERSION_MACRO " > "${PROJECT_BINARY_DIR}/version_gen.h.tmp"
-  COMMAND "${GIT_EXECUTABLE}" describe --tags --dirty --always >> "${PROJECT_BINARY_DIR}/version_gen.h.tmp"
-  WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-  VERBATIM
-)
-add_custom_command(
-  DEPENDS "${PROJECT_BINARY_DIR}/version_gen.h.tmp"
-  OUTPUT "${PROJECT_BINARY_DIR}/version_gen.h"
-  COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${PROJECT_BINARY_DIR}/version_gen.h.tmp" "${PROJECT_BINARY_DIR}/version_gen.h"
-  COMMAND "${CMAKE_COMMAND}" -E remove -f "${PROJECT_BINARY_DIR}/version_gen.h.tmp"
-  WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-  VERBATIM
-)
-add_custom_target(
-  generate_version ALL
-  DEPENDS "${PROJECT_BINARY_DIR}/version_gen.h"
-  WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-)
+include(GetRevisionDescription)
+get_revision_description(REVISION_DESCRIPTION_FINAL)
+configure_file("${CMAKE_SOURCE_DIR}/util/version_gen.h.in"
+  "${CMAKE_BINARY_DIR}/version_gen.h")
 
 find_package(ZLIB)
 find_package(Z3 4.8.5 REQUIRED)
@@ -88,6 +72,9 @@ add_custom_command(OUTPUT "${PROJECT_BINARY_DIR}/tools/alive_lexer.cpp"
 
 include_directories(${PROJECT_SOURCE_DIR})
 include_directories(${PROJECT_BINARY_DIR})
+
+include_directories(${PROJECT_SOURCE_DIR}/third_party/cpp-httplib)
+include_directories(${PROJECT_SOURCE_DIR}/third_party/jsoncons/include)
 
 set(IR_SRCS
   ir/attrs.cpp
@@ -140,6 +127,7 @@ set(UTIL_SRCS
   util/symexec.cpp
   util/unionfind.cpp
   util/concreteval.cpp
+  util/interp.cpp
 )
 
 set(UTIL_EXEC_SRCS
@@ -156,17 +144,15 @@ set(UTIL_EXEC_SRCS
   util/random.cpp
   util/sort.cpp
   util/stopwatch.cpp
-  #util/exec.cpp
+  util/symexec.cpp
   util/unionfind.cpp
   util/concreteval.cpp
   util/interp.cpp
 )
 
 add_library(util STATIC ${UTIL_SRCS})
-add_dependencies(util generate_version)
 
 add_library(util_exec STATIC ${UTIL_EXEC_SRCS})
-add_dependencies(util_exec generate_version)
 
 set(ALIVE_LIBS ir smt tools util)
 set(ALIVE_EXEC_LIBS ir smt tools util_exec)
@@ -196,6 +182,7 @@ if (BUILD_LLVM_UTILS OR BUILD_TV)
     "llvm_util/known_fns.cpp"
     "llvm_util/llvm2alive.cpp"
     "llvm_util/utils.cpp"
+    "util/worker.cpp"
   )
 
   add_library(llvm_util STATIC ${LLVM_UTIL_SRCS})
@@ -217,6 +204,17 @@ if (BUILD_LLVM_UTILS OR BUILD_TV)
   add_llvm_executable(alive-interp
     "tools/alive-interp.cpp"
   )
+  add_llvm_executable(alive-worker
+    "tools/alive-worker.cpp"
+  )
+  add_llvm_executable(alive-worker-test
+    "tools/alive-worker-test.cpp"
+  )
+
+
+
+
+
 
 else()
   set(LLVM_UTIL_SRCS "")
@@ -259,11 +257,13 @@ add_executable(alive-jobserver
 #add_library(alive2 SHARED ${IR_SRCS} ${SMT_SRCS} ${TOOLS_SRCS} ${UTIL_SRCS} ${LLVM_UTIL_SRCS})
 
 if (BUILD_LLVM_UTILS OR BUILD_TV)
-  llvm_map_components_to_libnames(llvm_libs support core irreader analysis passes transformutils)
+  llvm_map_components_to_libnames(llvm_libs support core irreader analysis passes transformutils bitreader bitwriter)
   target_link_libraries(alive PRIVATE ${llvm_libs})
   #target_link_libraries(alive2 PRIVATE ${llvm_libs})
   target_link_libraries(alive-tv PRIVATE ${ALIVE_LIBS_LLVM} ${llvm_libs})
   target_link_libraries(alive-exec PRIVATE ${ALIVE_LIBS_LLVM} ${llvm_libs})
+  target_link_libraries(alive-worker PRIVATE ${ALIVE_EXEC_LIBS_LLVM} ${llvm_libs})
+  target_link_libraries(alive-worker-test PRIVATE ${ALIVE_EXEC_LIBS_LLVM} ${llvm_libs})
   #target_link_libraries(alive-exec-concrete PRIVATE ${ALIVE_EXEC_LIBS_LLVM} ${llvm_libs})
   target_link_libraries(alive-interp PRIVATE ${ALIVE_EXEC_LIBS_LLVM} ${llvm_libs})
 endif()
@@ -282,6 +282,9 @@ else()
     target_link_libraries(alive-exec PRIVATE ${Z3_LIBRARIES})
     #target_link_libraries(alive-exec-concrete PRIVATE ${Z3_LIBRARIES})
     target_link_libraries(alive-interp PRIVATE ${Z3_LIBRARIES})
+    target_link_libraries(alive-worker PRIVATE ${Z3_LIBRARIES})
+    target_link_libraries(alive-worker-test PRIVATE ${Z3_LIBRARIES})
+
   endif()
 endif()
 

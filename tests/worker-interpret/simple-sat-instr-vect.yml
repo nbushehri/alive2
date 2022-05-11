@@ -1,0 +1,102 @@
+---
+name: sadd_sat_vect_i32
+func: alive.interpret
+args:
+  - {}
+  - !ir | 
+    declare <2 x i32> @llvm.sadd.sat.v2i32(<2 x i32> %a, <2 x i32> %b)
+
+    define <2 x i32> @test_sadd_sat_vec(<2 x i32> %x, <2 x i32> %y) {
+      %res = call <2 x i32> @llvm.sadd.sat.v2i32(<2 x i32> %x, <2 x i32> %y)
+      ret <2 x i32> %res
+    }
+  - args: [[2147483647, 0],[7,77]]
+expected:
+  status: done
+  undefined: false
+  return_value: [2147483647, 77]
+---
+name: uadd_sat_vect_i32
+func: alive.interpret
+args:
+  - {}
+  - !ir | 
+    declare <2 x i32> @llvm.uadd.sat.v2i32(<2 x i32> %a, <2 x i32> %b)
+
+    define <2 x i32> @test_uadd_sat_vec(<2 x i32> %x, <2 x i32> %y) {
+      %res = call <2 x i32> @llvm.uadd.sat.v2i32(<2 x i32> %x, <2 x i32> %y)
+      ret <2 x i32> %res
+    }
+  - args: [[2147483647, 0],[7,77]]
+expected:
+  status: done
+  undefined: false
+  return_value: [-2147483642, 77]
+---
+name: ssub_sat_vect_i32
+func: alive.interpret
+args:
+  - {}
+  - !ir | 
+    declare <2 x i32> @llvm.ssub.sat.v2i32(<2 x i32> %a, <2 x i32> %b)
+
+    define <2 x i32> @test_ssub_sat_vec(<2 x i32> %x, <2 x i32> %y) {
+      %res = call <2 x i32> @llvm.ssub.sat.v2i32(<2 x i32> %x, <2 x i32> %y)
+      ret <2 x i32> %res
+    }
+  - args: [[2147483647, 0],[-7,77]]
+expected:
+  status: done
+  undefined: false
+  return_value: [2147483647, -77]
+---
+name: usub_sat_vect_i32
+func: alive.interpret
+args:
+  - {}
+  - !ir | 
+    declare <2 x i32> @llvm.usub.sat.v2i32(<2 x i32> %a, <2 x i32> %b)
+
+    define <2 x i32> @test_usub_sat_vec(<2 x i32> %x, <2 x i32> %y) {
+      %res = call <2 x i32> @llvm.usub.sat.v2i32(<2 x i32> %x, <2 x i32> %y)
+      ret <2 x i32> %res
+    }
+  - args: [[2147483647, 0],[-7,77]]
+expected:
+  status: done
+  undefined: false
+  return_value: [0, 0]
+---
+name: sshl_sat_vect_i32
+func: alive.interpret
+args:
+  - {}
+  - !ir | 
+    declare <2 x i32> @llvm.sshl.sat.v2i32(<2 x i32> %a, <2 x i32> %b)
+
+    define <2 x i32> @test_sshl_sat_vec(<2 x i32> %x, <2 x i32> %y) {
+      %res = call <2 x i32> @llvm.sshl.sat.v2i32(<2 x i32> %x, <2 x i32> %y)
+      ret <2 x i32> %res
+    }
+  - args: [[2147483647, 0],[-7,77]]
+expected:
+  status: done
+  undefined: false
+  return_value: [poison, poison]
+---
+name: ushl_sat_vect_i32
+func: alive.interpret
+args:
+  - {}
+  - !ir | 
+    declare <2 x i32> @llvm.ushl.sat.v2i32(<2 x i32> %a, <2 x i32> %b)
+
+    define <2 x i32> @test_ushl_sat_vec(<2 x i32> %x, <2 x i32> %y) {
+      %res = call <2 x i32> @llvm.ushl.sat.v2i32(<2 x i32> %x, <2 x i32> %y)
+      ret <2 x i32> %res
+    }
+  - args: [[2147483647, 0],[-7,77]]
+expected:
+  status: done
+  undefined: false
+  return_value: [poison, poison]

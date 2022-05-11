@@ -7,3 +7,5 @@ define i8 @f(i8* %a) {
 }
 
 declare i8 @g(i8*)
+; XFAIL: call with escaped locals
+; SKIP-IDENTITY

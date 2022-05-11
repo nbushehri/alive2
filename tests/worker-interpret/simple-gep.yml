@@ -1,0 +1,72 @@
+name: gep_1
+func: alive.interpret
+args:
+  - {}
+  - !ir |
+    define i8 @tgt(i8* %in) {
+      %ind = getelementptr i8, i8* %in, i64 3
+      %res = load i8, i8* %ind
+      ret i8 %res
+    }
+  - args: [[1,0]]
+    memory:
+      - size: 0
+        align: 0
+      - size: 6
+        align: 1
+        bytes:
+          - [0, 255, 12]
+          - [1, 255, 13]
+          - [2, 255, 14]
+          - [3, 255, 15]
+          - [null, 0, 0]
+expected:
+  status: done
+  undefined: false
+  return_value: 15
+---
+name: gep_2
+func: alive.interpret
+args:
+  - {}
+  - !ir |
+    %struct.ST = type { i32, double, %struct.RT }
+    %struct.RT = type { i8, [10 x [20 x i32]], i8 }
+    
+    define i32* @bar(%struct.ST* %0) {
+      %2 = getelementptr inbounds %struct.ST, %struct.ST* %0, i64 0, i32 2, i32 1, i64 5, i64 13
+      ret i32* %2
+    }
+  - args: [[1,0]]
+    memory:
+      - size: 0
+        align: 0
+      - size: 824
+        align: 10
+expected:
+  status: done
+  undefined: false
+  return_value: [1,472]
+---
+name: gep_3
+func: alive.interpret
+args:
+  - {}
+  - !ir |
+    %struct.ST = type { i32, double, %struct.RT }
+    %struct.RT = type { i8, [10 x [20 x i32]], i8 }
+    
+    define i32* @bar(%struct.ST* %0) {
+      %2 = getelementptr inbounds %struct.ST, %struct.ST* %0, i64 1, i32 2, i32 1, i64 5, i64 13
+      ret i32* %2
+    }
+  - args: [[1,0]]
+    memory:
+      - size: 0
+        align: 0
+      - size: 824
+        align: 10
+expected:
+  status: done
+  undefined: false
+  return_value: poison

@@ -1,0 +1,102 @@
+---
+name: unreachable
+func: alive.interpret
+args:
+  - {}
+  - !ir 'define void @f() { unreachable }'
+  - args: []
+expected:
+  status: done
+  undefined: true
+---
+name: assume_normal_true
+func: alive.interpret
+args:
+  - {}
+  - !ir |
+    declare void @llvm.assume(i1 %cond)
+    define void @f(i1 %x) {
+      call void @llvm.assume(i1 %x)
+      ret void
+    }
+  - args: [1]
+expected:
+  status: done
+  undefined: false
+  return_value: null
+---
+name: assume_normal_false
+func: alive.interpret
+args:
+  - {}
+  - !ir |
+    declare void @llvm.assume(i1 %cond)
+    define void @f(i1 %x) {
+      call void @llvm.assume(i1 %x)
+      ret void
+    }
+  - args: [0]
+expected:
+  status: done
+  undefined: true
+---
+name: assume_normal_poison
+func: alive.interpret
+args:
+  - {}
+  - !ir |
+    declare void @llvm.assume(i1 %cond)
+    define void @f(i1 %x) {
+      call void @llvm.assume(i1 %x)
+      ret void
+    }
+  - args: [poison]
+expected:
+  status: done
+  undefined: true
+---
+name: assume_noundef_defined
+func: alive.interpret
+args:
+  - {}
+  - !ir |
+    declare void @llvm.assume(i1 %cond)
+    define void @f(i32 %x) {
+      call void @llvm.assume(i1 1) ["noundef"(i32 %x)]
+      ret void
+    }
+  - args: [0]
+expected:
+  status: done
+  undefined: false
+  return_value: null
+---
+name: assume_noundef_poison
+func: alive.interpret
+args:
+  - {}
+  - !ir |
+    declare void @llvm.assume(i1 %cond)
+    define void @f(i32 %x) {
+      call void @llvm.assume(i1 1) ["noundef"(i32 %x)]
+      ret void
+    }
+  - args: [poison]
+expected:
+  status: done
+  undefined: true
+---
+name: assume_nonnull
+func: alive.interpret
+args:
+  - {}
+  - !ir |
+    declare void @llvm.assume(i1 %cond)
+    define void @f() {
+      call void @llvm.assume(i1 1) [ "nonnull"(i8* null) ]
+      ret void
+    }
+  - args: []
+expected:
+  status: unsupported
+  unsupported: assume.nonnull

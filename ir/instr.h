@@ -4,14 +4,16 @@
 // Distributed under the MIT license that can be found in the LICENSE file.
 
 #include "ir/value.h"
-#include "llvm/ADT/APInt.h"
 #include "util/concreteval.h"
+#include "llvm/ADT/APInt.h"
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
 
 namespace util {
   class ConcreteVal;
+  class Interpreter;
 }
 
 namespace IR {
@@ -30,6 +32,9 @@ public:
   smt::expr getTypeConstraints() const override;
   virtual smt::expr getTypeConstraints(const Function &f) const = 0;
   virtual std::unique_ptr<Instr> dup(const std::string &suffix) const = 0;
+  virtual std::shared_ptr<util::ConcreteVal>
+  concreteEval(util::Interpreter &interpreter) const;
+  virtual std::string getOpcodeName() const;
 };
 
 
@@ -39,7 +44,6 @@ public:
             SAdd_Sat, UAdd_Sat, SSub_Sat, USub_Sat, SShl_Sat, UShl_Sat,
             SAdd_Overflow, UAdd_Overflow, SSub_Overflow, USub_Overflow,
             SMul_Overflow, UMul_Overflow,
-            FAdd, FSub, FMul, FDiv, FRem, FMax, FMin, FMaximum, FMinimum,
             And, Or, Xor, Cttz, Ctlz, UMin, UMax, SMin, SMax, Abs };
   enum Flags { None = 0, NSW = 1 << 0, NUW = 1 << 1, Exact = 1 << 2 };
 
@@ -47,12 +51,11 @@ private:
   Value *lhs, *rhs;
   Op op;
   unsigned flags;
-  FastMathFlags fmath;
   bool isDivOrRem() const;
 
 public:
   BinOp(Type &type, std::string &&name, Value &lhs, Value &rhs, Op op,
-        unsigned flags = 0, FastMathFlags fmath = {});
+        unsigned flags = None);
 
   std::vector<Value*> operands() const override;
   bool propagatesPoison() const override;
@@ -61,26 +64,54 @@ public:
   StateValue toSMT(State &s) const override;
   smt::expr getTypeConstraints(const Function &f) const override;
   std::unique_ptr<Instr> dup(const std::string &suffix) const override;
-  util::ConcreteVal* concreteEval(std::map<const Value*, util::ConcreteVal*> &concrete_vals, bool &UB_flag) const;//TODO probably need to declare this in Instr
+  std::shared_ptr<util::ConcreteVal>
+  concreteEval(util::Interpreter &interpreter) const override;
+};
+
+
+class FpBinOp final : public Instr {
+public:
+  enum Op { FAdd, FSub, FMul, FDiv, FRem, FMax, FMin, FMaximum, FMinimum,
+            CopySign };
+
+private:
+  Value *lhs, *rhs;
+  Op op;
+  FastMathFlags fmath;
+  FpRoundingMode rm;
+  FpExceptionMode ex;
+
+public:
+  FpBinOp(Type &type, std::string &&name, Value &lhs, Value &rhs, Op op,
+          FastMathFlags fmath, FpRoundingMode rm = {}, FpExceptionMode ex = {})
+  : Instr(type, std::move(name)), lhs(&lhs), rhs(&rhs), op(op), fmath(fmath),
+    rm(rm), ex(ex) {}
+
+  std::vector<Value*> operands() const override;
+  bool propagatesPoison() const override;
+  void rauw(const Value &what, Value &with) override;
+  void print(std::ostream &os) const override;
+  StateValue toSMT(State &s) const override;
+  smt::expr getTypeConstraints(const Function &f) const override;
+  std::unique_ptr<Instr> dup(const std::string &suffix) const override;
+  std::shared_ptr<util::ConcreteVal>
+  concreteEval(util::Interpreter &interpreter) const override;
 };
 
 
 class UnaryOp final : public Instr {
 public:
   enum Op {
-    Copy, BitReverse, BSwap, Ctpop, IsConstant, FAbs, FNeg,
-    Ceil, Floor, Round, RoundEven, Trunc, Sqrt, FFS
+    Copy, BitReverse, BSwap, Ctpop, IsConstant, FFS
   };
 
 private:
   Value *val;
   Op op;
-  FastMathFlags fmath;
 
 public:
-  UnaryOp(Type &type, std::string &&name, Value &val, Op op,
-          FastMathFlags fmath = {})
-    : Instr(type, std::move(name)), val(&val), op(op), fmath(fmath) {}
+  UnaryOp(Type &type, std::string &&name, Value &val, Op op)
+    : Instr(type, std::move(name)), val(&val), op(op) {}
 
   Op getOp() const { return op; }
   Value& getValue() const { return *val; }
@@ -91,8 +122,40 @@ public:
   StateValue toSMT(State &s) const override;
   smt::expr getTypeConstraints(const Function &f) const override;
   std::unique_ptr<Instr> dup(const std::string &suffix) const override;
-  bool isFPInstr() const;
-  util::ConcreteVal* concreteEval(std::map<const Value*, util::ConcreteVal*> &concrete_vals) const;
+  std::shared_ptr<util::ConcreteVal>
+  concreteEval(util::Interpreter &interpreter) const override;
+};
+
+
+class FpUnaryOp final : public Instr {
+public:
+  enum Op {
+    FAbs, FNeg, Ceil, Floor, RInt, NearbyInt, Round, RoundEven, Trunc, Sqrt
+  };
+
+private:
+  Value *val;
+  Op op;
+  FastMathFlags fmath;
+  FpRoundingMode rm;
+  FpExceptionMode ex;
+
+public:
+  FpUnaryOp(Type &type, std::string &&name, Value &val, Op op,
+            FastMathFlags fmath, FpRoundingMode rm = {},
+            FpExceptionMode ex = {})
+    : Instr(type, std::move(name)), val(&val), op(op), fmath(fmath), rm(rm),
+      ex(ex) {}
+
+  std::vector<Value*> operands() const override;
+  bool propagatesPoison() const override;
+  void rauw(const Value &what, Value &with) override;
+  void print(std::ostream &os) const override;
+  StateValue toSMT(State &s) const override;
+  smt::expr getTypeConstraints(const Function &f) const override;
+  std::unique_ptr<Instr> dup(const std::string &suffix) const override;
+  std::shared_ptr<util::ConcreteVal>
+  concreteEval(util::Interpreter &interpreter) const override;
 };
 
 
@@ -123,16 +186,16 @@ public:
 
 class TernaryOp final : public Instr {
 public:
-  enum Op { FShl, FShr, FMA };
+  enum Op { FShl, FShr };
 
 private:
   Value *a, *b, *c;
   Op op;
-  FastMathFlags fmath;
 
 public:
-  TernaryOp(Type &type, std::string &&name, Value &a, Value &b, Value &c, Op op,
-            FastMathFlags fmath = {});
+  TernaryOp(Type &type, std::string &&name, Value &a, Value &b, Value &c,
+            Op op)
+    : Instr(type, std::move(name)), a(&a), b(&b), c(&c), op(op) {}
 
   std::vector<Value*> operands() const override;
   bool propagatesPoison() const override;
@@ -141,14 +204,44 @@ public:
   StateValue toSMT(State &s) const override;
   smt::expr getTypeConstraints(const Function &f) const override;
   std::unique_ptr<Instr> dup(const std::string &suffix) const override;
-  util::ConcreteVal* concreteEval(std::map<const Value*, util::ConcreteVal*> &concrete_vals) const;
+  std::shared_ptr<util::ConcreteVal>
+  concreteEval(util::Interpreter &interpreter) const override;
+};
+
+
+class FpTernaryOp final : public Instr {
+public:
+  enum Op { FMA, MulAdd };
+
+private:
+  Value *a, *b, *c;
+  Op op;
+  FastMathFlags fmath;
+  FpRoundingMode rm;
+  FpExceptionMode ex;
+
+public:
+  FpTernaryOp(Type &type, std::string &&name, Value &a, Value &b, Value &c,
+              Op op, FastMathFlags fmath, FpRoundingMode rm = {},
+              FpExceptionMode ex = {})
+    : Instr(type, std::move(name)), a(&a), b(&b), c(&c), op(op), fmath(fmath),
+      rm(rm), ex(ex) {}
+
+  std::vector<Value*> operands() const override;
+  bool propagatesPoison() const override;
+  void rauw(const Value &what, Value &with) override;
+  void print(std::ostream &os) const override;
+  StateValue toSMT(State &s) const override;
+  smt::expr getTypeConstraints(const Function &f) const override;
+  std::unique_ptr<Instr> dup(const std::string &suffix) const override;
+  std::shared_ptr<util::ConcreteVal>
+  concreteEval(util::Interpreter &interpreter) const override;
 };
 
 
 class ConversionOp final : public Instr {
 public:
-  enum Op { SExt, ZExt, Trunc, BitCast, SIntToFP, UIntToFP, FPToSInt, FPToUInt,
-            FPExt, FPTrunc, Ptr2Int, Int2Ptr };
+  enum Op { SExt, ZExt, Trunc, BitCast, Ptr2Int, Int2Ptr };
 
 private:
   Value *val;
@@ -167,7 +260,34 @@ public:
   StateValue toSMT(State &s) const override;
   smt::expr getTypeConstraints(const Function &f) const override;
   std::unique_ptr<Instr> dup(const std::string &suffix) const override;
-  util::ConcreteVal* concreteEval(std::map<const Value*, util::ConcreteVal*> &concrete_vals) const;
+  std::shared_ptr<util::ConcreteVal>
+  concreteEval(util::Interpreter &interpreter) const override;
+};
+
+
+class FpConversionOp final : public Instr {
+public:
+  enum Op { SIntToFP, UIntToFP, FPToSInt, FPToUInt, FPExt, FPTrunc, LRInt,
+            LRound };
+
+private:
+  Value *val;
+  Op op;
+  FpRoundingMode rm;
+  FpExceptionMode ex;
+
+public:
+  FpConversionOp(Type &type, std::string &&name, Value &val, Op op,
+                 FpRoundingMode rm = {}, FpExceptionMode ex = {})
+    : Instr(type, std::move(name)), val(&val), op(op), rm(rm), ex(ex) {}
+
+  std::vector<Value*> operands() const override;
+  bool propagatesPoison() const override;
+  void rauw(const Value &what, Value &with) override;
+  void print(std::ostream &os) const override;
+  StateValue toSMT(State &s) const override;
+  smt::expr getTypeConstraints(const Function &f) const override;
+  std::unique_ptr<Instr> dup(const std::string &suffix) const override;
 };
 
 
@@ -188,7 +308,8 @@ public:
   StateValue toSMT(State &s) const override;
   smt::expr getTypeConstraints(const Function &f) const override;
   std::unique_ptr<Instr> dup(const std::string &suffix) const override;
-  util::ConcreteVal* concreteEval(std::map<const Value*, util::ConcreteVal*> &concrete_vals) const;//TODO probably need to declare this in Instr
+  std::shared_ptr<util::ConcreteVal>
+  concreteEval(util::Interpreter &interpreter) const override;
 };
 
 
@@ -206,6 +327,8 @@ public:
   StateValue toSMT(State &s) const override;
   smt::expr getTypeConstraints(const Function &f) const override;
   std::unique_ptr<Instr> dup(const std::string &suffix) const override;
+  std::shared_ptr<util::ConcreteVal>
+  concreteEval(util::Interpreter &interpreter) const override;
 };
 
 
@@ -223,6 +346,8 @@ public:
   StateValue toSMT(State &s) const override;
   smt::expr getTypeConstraints(const Function &f) const override;
   std::unique_ptr<Instr> dup(const std::string &suffix) const override;
+  std::shared_ptr<util::ConcreteVal>
+  concreteEval(util::Interpreter &interpreter) const override;
 };
 
 
@@ -258,14 +383,15 @@ public:
   StateValue toSMT(State &s) const override;
   smt::expr getTypeConstraints(const Function &f) const override;
   std::unique_ptr<Instr> dup(const std::string &suffix) const override;
-  util::ConcreteVal* concreteEval(std::map<const Value*, util::ConcreteVal*> &concrete_vals) const;
+  std::shared_ptr<util::ConcreteVal>
+  concreteEval(util::Interpreter &interpreter) const override;
 };
 
 
 class FCmp final : public Instr {
 public:
   enum Cond { OEQ, OGT, OGE, OLT, OLE, ONE, ORD,
-              UEQ, UGT, UGE, ULT, ULE, UNE, UNO };
+              UEQ, UGT, UGE, ULT, ULE, UNE, UNO, TRUE, FALSE };
 
 private:
   Value *a, *b;
@@ -275,7 +401,7 @@ private:
 public:
   FCmp(Type &type, std::string &&name, Cond cond, Value &a, Value &b,
        FastMathFlags fmath)
-    : Instr(type, move(name)), a(&a), b(&b), cond(cond), fmath(fmath) {}
+    : Instr(type, std::move(name)), a(&a), b(&b), cond(cond), fmath(fmath) {}
 
   std::vector<Value*> operands() const override;
   void rauw(const Value &what, Value &with) override;
@@ -283,7 +409,8 @@ public:
   StateValue toSMT(State &s) const override;
   smt::expr getTypeConstraints(const Function &f) const override;
   std::unique_ptr<Instr> dup(const std::string &suffix) const override;
-  util::ConcreteVal * concreteEval(std::map<const Value *, util::ConcreteVal *> &concrete_vals) const;
+  std::shared_ptr<util::ConcreteVal>
+  concreteEval(util::Interpreter &interpreter) const override;
 };
 
 
@@ -326,27 +453,28 @@ public:
 
 class JumpInstr : public Instr {
 public:
-  JumpInstr(Type &type, std::string &&name) : Instr(type, std::move(name)) {}
+  JumpInstr(const char *name) : Instr(Type::voidTy, name) {}
 
   class target_iterator {
-    JumpInstr *instr;
+    const JumpInstr *instr;
     unsigned idx;
   public:
-    target_iterator() {}
-    target_iterator(JumpInstr *instr, unsigned idx) : instr(instr), idx(idx) {}
+    target_iterator() = default;
+    target_iterator(const JumpInstr *instr, unsigned idx)
+      : instr(instr), idx(idx) {}
     const BasicBlock& operator*() const;
     target_iterator& operator++(void) { ++idx; return *this; }
     bool operator==(const target_iterator &rhs) const { return idx == rhs.idx; }
   };
 
   class it_helper {
-    JumpInstr *instr;
+    const JumpInstr *instr;
   public:
-    it_helper(JumpInstr *instr = nullptr) : instr(instr) {}
+    it_helper(const JumpInstr *instr = nullptr) : instr(instr) {}
     target_iterator begin() const { return { instr, 0 }; }
     target_iterator end() const;
   };
-  it_helper targets() { return this; }
+  it_helper targets() const { return this; }
   virtual void replaceTargetWith(const BasicBlock *From,
                                  const BasicBlock *To) = 0;
 };
@@ -356,12 +484,10 @@ class Branch final : public JumpInstr {
   Value *cond = nullptr;
   const BasicBlock *dst_true, *dst_false = nullptr;
 public:
-  Branch(const BasicBlock &dst)
-    : JumpInstr(Type::voidTy, "br"), dst_true(&dst) {}
+  Branch(const BasicBlock &dst) : JumpInstr("br"), dst_true(&dst) {}
 
   Branch(Value &cond, const BasicBlock &dst_true, const BasicBlock &dst_false)
-    : JumpInstr(Type::voidTy, "br"), cond(&cond), dst_true(&dst_true),
-    dst_false(&dst_false) {}
+    : JumpInstr("br"), cond(&cond), dst_true(&dst_true), dst_false(&dst_false){}
 
   auto& getTrue() const { return *dst_true; }
   auto getFalse() const { return dst_false; }
@@ -389,8 +515,7 @@ class Switch final : public JumpInstr {
 
 public:
   Switch(Value &value, const BasicBlock &default_target)
-    : JumpInstr(Type::voidTy, "switch"), value(&value),
-      default_target(&default_target) {}
+    : JumpInstr("switch"), value(&value), default_target(&default_target) {}
 
   void addTarget(Value &val, const BasicBlock &target);
 
@@ -446,12 +571,14 @@ public:
   StateValue toSMT(State &s) const override;
   smt::expr getTypeConstraints(const Function &f) const override;
   std::unique_ptr<Instr> dup(const std::string &suffix) const override;
+  std::shared_ptr<util::ConcreteVal>
+  concreteEval(util::Interpreter &interpreter) const override;
 };
 
 
 class MemInstr : public Instr {
 public:
-  MemInstr(Type &type, std::string &&name) : Instr(type, move(name)) {}
+  MemInstr(Type &type, std::string &&name) : Instr(type, std::move(name)) {}
 
   // If this instruction allocates a memory block, return its size and
   //  alignment. Returns 0 if it doesn't allocate anything.
@@ -474,6 +601,7 @@ public:
     bool hasIntByteAccess = false;
     bool doesPtrLoad = false;
     bool doesPtrStore = false;
+    bool observesAddresses = false;
 
     // The maximum size of a byte that this instruction can support.
     // If zero, this instruction does not read/write bytes.
@@ -494,10 +622,10 @@ public:
 
 class Alloc final : public MemInstr {
   Value *size, *mul;
-  unsigned align;
+  uint64_t align;
   bool initially_dead = false;
 public:
-  Alloc(Type &type, std::string &&name, Value &size, Value *mul, unsigned align)
+  Alloc(Type &type, std::string &&name, Value &size, Value *mul, uint64_t align)
     : MemInstr(type, std::move(name)), size(&size), mul(mul), align(align) {}
 
   Value& getSize() const { return *size; }
@@ -517,28 +645,29 @@ public:
   StateValue toSMT(State &s) const override;
   smt::expr getTypeConstraints(const Function &f) const override;
   std::unique_ptr<Instr> dup(const std::string &suffix) const override;
+  std::shared_ptr<util::ConcreteVal>
+  concreteEval(util::Interpreter &interpreter) const override;
 };
 
 
 class Malloc final : public MemInstr {
   Value *ptr = nullptr, *size;
-  unsigned align;
-  // Is this malloc (or equivalent operation, like new()) never returning
-  // null?
+  uint64_t align;
   bool isNonNull = false;
 
 public:
   Malloc(Type &type, std::string &&name, Value &size, bool isNonNull,
-         unsigned align = 0)
+         uint64_t align)
     : MemInstr(type, std::move(name)), size(&size), align(align),
       isNonNull(isNonNull) {}
 
   Malloc(Type &type, std::string &&name, Value &ptr, Value &size,
-         unsigned align = 0)
-    : MemInstr(type, std::move(name)), ptr(&ptr), size(&size), align(align) {}
+         bool isNonNull, uint64_t align)
+    : MemInstr(type, std::move(name)), ptr(&ptr), size(&size), align(align),
+      isNonNull(isNonNull) {}
 
   Value& getSize() const { return *size; }
-  unsigned getAlign() const;
+  uint64_t getAlign() const;
   bool isRealloc() const { return ptr != nullptr; }
 
   std::pair<uint64_t, unsigned> getMaxAllocSize() const override;
@@ -558,15 +687,15 @@ public:
 
 class Calloc final : public MemInstr {
   Value *num, *size;
-  unsigned align;
+  uint64_t align;
 public:
   Calloc(Type &type, std::string &&name, Value &num, Value &size,
-         unsigned align = 0)
+         uint64_t align = 0)
     : MemInstr(type, std::move(name)), num(&num), size(&size), align(align) {}
 
   Value& getNum() const { return *num; }
   Value& getSize() const { return *size; }
-  unsigned getAlign() const;
+  uint64_t getAlign() const;
 
   std::pair<uint64_t, unsigned> getMaxAllocSize() const override;
   uint64_t getMaxAccessSize() const override;
@@ -651,18 +780,20 @@ public:
   StateValue toSMT(State &s) const override;
   smt::expr getTypeConstraints(const Function &f) const override;
   std::unique_ptr<Instr> dup(const std::string &suffix) const override;
+  std::shared_ptr<util::ConcreteVal>
+  concreteEval(util::Interpreter &interpreter) const override;
 };
 
 
 class Load final : public MemInstr {
   Value *ptr;
-  unsigned align;
+  uint64_t align;
 public:
-  Load(Type &type, std::string &&name, Value &ptr, unsigned align)
+  Load(Type &type, std::string &&name, Value &ptr, uint64_t align)
     : MemInstr(type, std::move(name)), ptr(&ptr), align(align) {}
 
   Value& getPtr() const { return *ptr; }
-  unsigned getAlign() const { return align; }
+  uint64_t getAlign() const { return align; }
 
   std::pair<uint64_t, unsigned> getMaxAllocSize() const override;
   uint64_t getMaxAccessSize() const override;
@@ -676,19 +807,21 @@ public:
   StateValue toSMT(State &s) const override;
   smt::expr getTypeConstraints(const Function &f) const override;
   std::unique_ptr<Instr> dup(const std::string &suffix) const override;
+  std::shared_ptr<util::ConcreteVal>
+  concreteEval(util::Interpreter &interpreter) const override;
 };
 
 
 class Store final : public MemInstr {
   Value *ptr, *val;
-  unsigned align;
+  uint64_t align;
 public:
-  Store(Value &ptr, Value &val, unsigned align)
+  Store(Value &ptr, Value &val, uint64_t align)
     : MemInstr(Type::voidTy, "store"), ptr(&ptr), val(&val), align(align) {}
 
   Value& getValue() const { return *val; }
   Value& getPtr() const { return *ptr; }
-  unsigned getAlign() const { return align; }
+  uint64_t getAlign() const { return align; }
 
   std::pair<uint64_t, unsigned> getMaxAllocSize() const override;
   uint64_t getMaxAccessSize() const override;
@@ -703,19 +836,21 @@ public:
   StateValue toSMT(State &s) const override;
   smt::expr getTypeConstraints(const Function &f) const override;
   std::unique_ptr<Instr> dup(const std::string &suffix) const override;
+  std::shared_ptr<util::ConcreteVal>
+  concreteEval(util::Interpreter &interpreter) const override;
 };
 
 
 class Memset final : public MemInstr {
   Value *ptr, *val, *bytes;
-  unsigned align;
+  uint64_t align;
 public:
-  Memset(Value &ptr, Value &val, Value &bytes, unsigned align)
+  Memset(Value &ptr, Value &val, Value &bytes, uint64_t align)
     : MemInstr(Type::voidTy, "memset"), ptr(&ptr), val(&val), bytes(&bytes),
             align(align) {}
 
   Value& getBytes() const { return *bytes; }
-  unsigned getAlign() const { return align; }
+  uint64_t getAlign() const { return align; }
 
   std::pair<uint64_t, unsigned> getMaxAllocSize() const override;
   uint64_t getMaxAccessSize() const override;
@@ -754,17 +889,17 @@ public:
 
 class Memcpy final : public MemInstr {
   Value *dst, *src, *bytes;
-  unsigned align_dst, align_src;
+  uint64_t align_dst, align_src;
   bool move;
 public:
   Memcpy(Value &dst, Value &src, Value &bytes,
-         unsigned align_dst, unsigned align_src, bool move)
+         uint64_t align_dst, uint64_t align_src, bool move)
     : MemInstr(Type::voidTy, "memcpy"), dst(&dst), src(&src), bytes(&bytes),
             align_dst(align_dst), align_src(align_src), move(move) {}
 
   Value& getBytes() const { return *bytes; }
-  unsigned getSrcAlign() const { return align_src; }
-  unsigned getDstAlign() const { return align_dst; }
+  uint64_t getSrcAlign() const { return align_src; }
+  uint64_t getDstAlign() const { return align_dst; }
 
   std::pair<uint64_t, unsigned> getMaxAllocSize() const override;
   uint64_t getMaxAccessSize() const override;
@@ -829,7 +964,7 @@ public:
 };
 
 
-class FnCall final : public MemInstr {
+class FnCall : public MemInstr {
 private:
   std::string fnName;
   std::vector<std::pair<Value*, ParamAttrs>> args;
@@ -859,6 +994,13 @@ public:
   StateValue toSMT(State &s) const override;
   smt::expr getTypeConstraints(const Function &f) const override;
   std::unique_ptr<Instr> dup(const std::string &suffix) const override;
+};
+
+
+class InlineAsm final : public FnCall {
+public:
+  InlineAsm(Type &type, std::string &&name, const std::string &asm_str,
+            const std::string &constraints, FnAttrs &&attrs = FnAttrs::None);
 };
 
 

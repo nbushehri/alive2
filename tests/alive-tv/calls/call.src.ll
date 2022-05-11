@@ -82,3 +82,6 @@ declare void @j(i32)
 declare i8* @k()
 
 declare void @llvm.memcpy.p0i8.p0i8.i64(i8*, i8*, i64, i1)
+
+; SKIP-IDENTITY
+; XFAIL: Source is more defined

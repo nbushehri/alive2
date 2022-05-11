@@ -13,3 +13,6 @@ define void @tgt(i64 %sz) {
   call void @f(i8* %p)
   ret void
 }
+
+; SKIP-IDENTITY
+; XFAIL: Source is more defined

@@ -9,10 +9,12 @@
 #include "smt/exprs.h"
 #include "smt/solver.h"
 #include "util/compiler.h"
+#include "util/interp.h"
 #include <functional>
+#include <iostream>
+#include <memory>
 #include <numeric>
 #include <sstream>
-#include <iostream>
 
 using namespace smt;
 using namespace util;
@@ -54,7 +56,7 @@ struct LoopLikeFunctionApproximator {
   using fn_t = function<tuple<expr, expr, AndExpr, expr>(unsigned, bool)>;
   fn_t ith_exec;
 
-  LoopLikeFunctionApproximator(fn_t ith_exec) : ith_exec(move(ith_exec)) {}
+  LoopLikeFunctionApproximator(fn_t ith_exec) : ith_exec(std::move(ith_exec)) {}
 
   // (value, nonpoison, UB)
   tuple<expr, expr, expr> encode(IR::State &s, unsigned unroll_cnt) {
@@ -70,18 +72,16 @@ struct LoopLikeFunctionApproximator {
     auto ub = ub_i();
     prefix.add(ub_i);
 
-    if (is_last) {
+    if (is_last)
       s.addPre(prefix().implies(!continue_i));
-      return { move(res_i), move(np_i), move(ub) };
-    }
 
-    if (continue_i.isFalse() || ub.isFalse())
-      return { move(res_i), move(np_i), move(ub) };
+    if (is_last || continue_i.isFalse() || ub.isFalse())
+      return { std::move(res_i), std::move(np_i), std::move(ub) };
 
     prefix.add(continue_i);
     auto [val_next, np_next, ub_next] = _loop(s, prefix, i + 1, unroll_cnt);
-    return { expr::mkIf(continue_i, move(val_next), move(res_i)),
-             expr::mkIf(continue_i, move(np_next), move(np_i)),
+    return { expr::mkIf(continue_i, std::move(val_next), std::move(res_i)),
+             np_i && continue_i.implies(np_next),
              ub && continue_i.implies(ub_next) };
   }
 };
@@ -109,63 +109,45 @@ expr Instr::getTypeConstraints() const {
   return {};
 }
 
+std::shared_ptr<util::ConcreteVal>
+Instr::concreteEval(Interpreter &interpreter) const {
+  interpreter.setUnsupported(getOpcodeName());
+  return nullptr;
+}
+
+std::string Instr::getOpcodeName() const {
+  // TODO: modify Instr subclasses to override this method, so we don't have to
+  // parse the output of print().
+  ostringstream name_stream;
+  print(name_stream);
+  string name = name_stream.str();
+  auto i = name.find(" = ");
+  if (i != string::npos)
+    name = string(name.begin() + i + 3, name.end());
+  i = name.find(' ');
+  if (i != string::npos)
+    name.resize(i);
+  return name;
+}
 
 BinOp::BinOp(Type &type, string &&name, Value &lhs, Value &rhs, Op op,
-             unsigned flags, FastMathFlags fmath)
-  : Instr(type, move(name)), lhs(&lhs), rhs(&rhs), op(op), flags(flags),
-    fmath(fmath) {
+             unsigned flags)
+  : Instr(type, std::move(name)), lhs(&lhs), rhs(&rhs), op(op), flags(flags) {
   switch (op) {
   case Add:
   case Sub:
   case Mul:
   case Shl:
     assert((flags & (NSW | NUW)) == flags);
-    assert(fmath.isNone());
     break;
   case SDiv:
   case UDiv:
   case AShr:
   case LShr:
     assert((flags & Exact) == flags);
-    assert(fmath.isNone());
     break;
-  case FAdd:
-  case FSub:
-  case FMul:
-  case FDiv:
-  case FRem:
-  case FMin:
-  case FMax:
-  case FMinimum:
-  case FMaximum:
+  default:
     assert(flags == None);
-    break;
-  case SRem:
-  case URem:
-  case SAdd_Sat:
-  case UAdd_Sat:
-  case SSub_Sat:
-  case USub_Sat:
-  case SShl_Sat:
-  case UShl_Sat:
-  case And:
-  case Or:
-  case Xor:
-  case Cttz:
-  case Ctlz:
-  case SAdd_Overflow:
-  case UAdd_Overflow:
-  case SSub_Overflow:
-  case USub_Overflow:
-  case SMul_Overflow:
-  case UMul_Overflow:
-  case UMin:
-  case UMax:
-  case SMin:
-  case SMax:
-  case Abs:
-    assert(flags == None);
-    assert(fmath.isNone());
     break;
   }
 }
@@ -213,22 +195,11 @@ void BinOp::print(ostream &os) const {
   case USub_Overflow: str = "usub_overflow "; break;
   case SMul_Overflow: str = "smul_overflow "; break;
   case UMul_Overflow: str = "umul_overflow "; break;
-  case FAdd:          str = "fadd "; break;
-  case FSub:          str = "fsub "; break;
-  case FMul:          str = "fmul "; break;
-  case FDiv:          str = "fdiv "; break;
-  case FRem:          str = "frem "; break;
-  case FMax:          str = "fmax "; break;
-  case FMin:          str = "fmin "; break;
-  case FMaximum:      str = "fmaximum "; break;
-  case FMinimum:      str = "fminimum "; break;
   case UMin:          str = "umin "; break;
   case UMax:          str = "umax "; break;
   case SMin:          str = "smin "; break;
   case SMax:          str = "smax "; break;
-  case Abs:
-    str = "abs ";
-    break;
+  case Abs:           str = "abs "; break;
   }
 
   os << getName() << " = " << str;
@@ -239,22 +210,539 @@ void BinOp::print(ostream &os) const {
     os << "nuw ";
   if (flags & Exact)
     os << "exact ";
-  os << fmath
-     << print_type(getType()) << lhs->getName() << ", " << rhs->getName();
+  os << *lhs << ", " << rhs->getName();
 }
 
 static void div_ub(State &s, const expr &a, const expr &b, const expr &ap,
                    const expr &bp, bool sign) {
   // addUB(bp) is not needed because it is registered by getAndAddPoisonUB.
+  assert(!bp.isValid() || bp.isTrue());
   s.addUB(b != 0);
   if (sign)
     s.addUB((ap && a != expr::IntSMin(b.bits())) || b != expr::mkInt(-1, b));
+}
+
+StateValue BinOp::toSMT(State &s) const {
+  bool vertical_zip = false;
+  function<StateValue(const expr&, const expr&, const expr&, const expr&)>
+    fn, scalar_op;
+
+  switch (op) {
+  case Add:
+    fn = [&](auto &a, auto &ap, auto &b, auto &bp) -> StateValue {
+      expr non_poison = true;
+      if (flags & NSW)
+        non_poison &= a.add_no_soverflow(b);
+      if (flags & NUW)
+        non_poison &= a.add_no_uoverflow(b);
+      return { a + b, std::move(non_poison) };
+    };
+    break;
+
+  case Sub:
+    fn = [&](auto &a, auto &ap, auto &b, auto &bp) -> StateValue {
+      expr non_poison = true;
+      if (flags & NSW)
+        non_poison &= a.sub_no_soverflow(b);
+      if (flags & NUW)
+        non_poison &= a.sub_no_uoverflow(b);
+      return { a - b, std::move(non_poison) };
+    };
+    break;
+
+  case Mul:
+    fn = [&](auto &a, auto &ap, auto &b, auto &bp) -> StateValue {
+      expr non_poison = true;
+      if (flags & NSW)
+        non_poison &= a.mul_no_soverflow(b);
+      if (flags & NUW)
+        non_poison &= a.mul_no_uoverflow(b);
+      return { a * b, std::move(non_poison) };
+    };
+    break;
+
+  case SDiv:
+    fn = [&](auto &a, auto &ap, auto &b, auto &bp) -> StateValue {
+      expr non_poison = true;
+      div_ub(s, a, b, ap, bp, true);
+      if (flags & Exact)
+        non_poison = a.sdiv_exact(b);
+      return { a.sdiv(b), std::move(non_poison) };
+    };
+    break;
+
+  case UDiv:
+    fn = [&](auto &a, auto &ap, auto &b, auto &bp) -> StateValue {
+      expr non_poison = true;
+      div_ub(s, a, b, ap, bp, false);
+      if (flags & Exact)
+        non_poison &= a.udiv_exact(b);
+      return { a.udiv(b), std::move(non_poison) };
+    };
+    break;
+
+  case SRem:
+    fn = [&](auto &a, auto &ap, auto &b, auto &bp) -> StateValue {
+      div_ub(s, a, b, ap, bp, true);
+      return { a.srem(b), true };
+    };
+    break;
+
+  case URem:
+    fn = [&](auto &a, auto &ap, auto &b, auto &bp) -> StateValue {
+      div_ub(s, a, b, ap, bp, false);
+      return { a.urem(b), true };
+    };
+    break;
+
+  case Shl:
+    fn = [&](auto &a, auto &ap, auto &b, auto &bp) -> StateValue {
+      auto non_poison = b.ult(b.bits());
+      if (flags & NSW)
+        non_poison &= a.shl_no_soverflow(b);
+      if (flags & NUW)
+        non_poison &= a.shl_no_uoverflow(b);
+
+      return { a << b, std::move(non_poison) };
+    };
+    break;
+
+  case AShr:
+    fn = [&](auto &a, auto &ap, auto &b, auto &bp) -> StateValue {
+      auto non_poison = b.ult(b.bits());
+      if (flags & Exact)
+        non_poison &= a.ashr_exact(b);
+      return { a.ashr(b), std::move(non_poison) };
+    };
+    break;
+
+  case LShr:
+    fn = [&](auto &a, auto &ap, auto &b, auto &bp) -> StateValue {
+      auto non_poison = b.ult(b.bits());
+      if (flags & Exact)
+        non_poison &= a.lshr_exact(b);
+      return { a.lshr(b), std::move(non_poison) };
+    };
+    break;
+
+  case SAdd_Sat:
+    fn = [](auto &a, auto &ap, auto &b, auto &bp) -> StateValue {
+      return { a.sadd_sat(b), true };
+    };
+    break;
+
+  case UAdd_Sat:
+    fn = [](auto &a, auto &ap, auto &b, auto &bp) -> StateValue {
+      return { a.uadd_sat(b), true };
+    };
+    break;
+
+  case SSub_Sat:
+    fn = [](auto &a, auto &ap, auto &b, auto &bp) -> StateValue {
+      return { a.ssub_sat(b), true };
+    };
+    break;
+
+  case USub_Sat:
+    fn = [](auto &a, auto &ap, auto &b, auto &bp) -> StateValue {
+      return { a.usub_sat(b), true };
+    };
+    break;
+
+  case SShl_Sat:
+    fn = [](auto &a, auto &ap, auto &b, auto &bp) -> StateValue {
+      return {a.sshl_sat(b), b.ult(b.bits())};
+    };
+    break;
+
+  case UShl_Sat:
+    fn = [](auto &a, auto &ap, auto &b, auto &bp) -> StateValue {
+      return {a.ushl_sat(b), b.ult(b.bits())};
+    };
+    break;
+
+  case And:
+    fn = [](auto &a, auto &ap, auto &b, auto &bp) -> StateValue {
+      return { a & b, true };
+    };
+    break;
+
+  case Or:
+    fn = [](auto &a, auto &ap, auto &b, auto &bp) -> StateValue {
+      return { a | b, true };
+    };
+    break;
+
+  case Xor:
+    fn = [](auto &a, auto &ap, auto &b, auto &bp) -> StateValue {
+      return { a ^ b, true };
+    };
+    break;
+
+  case Cttz:
+    fn = [](auto &a, auto &ap, auto &b, auto &bp) -> StateValue {
+      return { a.cttz(expr::mkUInt(a.bits(), a)),
+               b == 0u || a != 0u };
+    };
+    break;
+
+  case Ctlz:
+    fn = [](auto &a, auto &ap, auto &b, auto &bp) -> StateValue {
+      return { a.ctlz(),
+               b == 0u || a != 0u };
+    };
+    break;
+
+  case SAdd_Overflow:
+    vertical_zip = true;
+    fn = [](auto &a, auto &ap, auto &b, auto &bp) -> StateValue {
+      return { a + b, (!a.add_no_soverflow(b)).toBVBool() };
+    };
+    break;
+
+  case UAdd_Overflow:
+    vertical_zip = true;
+    fn = [](auto &a, auto &ap, auto &b, auto &bp) -> StateValue {
+      return { a + b, (!a.add_no_uoverflow(b)).toBVBool() };
+    };
+    break;
+
+  case SSub_Overflow:
+    vertical_zip = true;
+    fn = [](auto &a, auto &ap, auto &b, auto &bp) -> StateValue {
+      return { a - b, (!a.sub_no_soverflow(b)).toBVBool() };
+    };
+    break;
+
+  case USub_Overflow:
+    vertical_zip = true;
+    fn = [](auto &a, auto &ap, auto &b, auto &bp) -> StateValue {
+      return { a - b, (!a.sub_no_uoverflow(b)).toBVBool() };
+    };
+    break;
+
+  case SMul_Overflow:
+    vertical_zip = true;
+    fn = [](auto &a, auto &ap, auto &b, auto &bp) -> StateValue {
+      return { a * b, (!a.mul_no_soverflow(b)).toBVBool() };
+    };
+    break;
+
+  case UMul_Overflow:
+    vertical_zip = true;
+    fn = [](auto &a, auto &ap, auto &b, auto &bp) -> StateValue {
+      return { a * b, (!a.mul_no_uoverflow(b)).toBVBool() };
+    };
+    break;
+
+  case UMin:
+  case UMax:
+  case SMin:
+  case SMax:
+    fn = [&](auto &a, auto &ap, auto &b, auto &bp) -> StateValue {
+      expr v;
+      switch (op) {
+      case UMin:
+        v = a.umin(b);
+        break;
+      case UMax:
+        v = a.umax(b);
+        break;
+      case SMin:
+        v = a.smin(b);
+        break;
+      case SMax:
+        v = a.smax(b);
+        break;
+      default:
+        UNREACHABLE();
+      }
+      return { std::move(v), ap && bp };
+    };
+    break;
+
+  case Abs:
+    fn = [&](auto &a, auto &ap, auto &b, auto &bp) -> StateValue {
+      return { a.abs(), ap && bp && (b == 0 || a != expr::IntSMin(a.bits())) };
+    };
+    break;
+  }
+
+  function<pair<StateValue,StateValue>(const expr&, const expr&, const expr&,
+                                       const expr&)> zip_op;
+  if (vertical_zip) {
+    zip_op = [&](auto &a, auto &ap, auto &b, auto &bp) {
+      auto [v1, v2] = fn(a, ap, b, bp);
+      expr non_poison = ap && bp;
+      StateValue sv1(std::move(v1), expr(non_poison));
+      return make_pair(std::move(sv1), StateValue(std::move(v2), std::move(non_poison)));
+    };
+  } else {
+    scalar_op = [&](auto &a, auto &ap, auto &b, auto &bp) -> StateValue {
+      auto [v, np] = fn(a, ap, b, bp);
+      return { std::move(v), ap && bp && np };
+    };
+  }
+
+  auto &a = s[*lhs];
+  auto &b = isDivOrRem() ? s.getAndAddPoisonUB(*rhs) : s[*rhs];
+
+  if (lhs->getType().isVectorType()) {
+    auto retty = getType().getAsAggregateType();
+    vector<StateValue> vals;
+
+    if (vertical_zip) {
+      auto ty = lhs->getType().getAsAggregateType();
+      vector<StateValue> vals1, vals2;
+      unsigned val2idx = 1 + retty->isPadding(1);
+      auto val1ty = retty->getChild(0).getAsAggregateType();
+      auto val2ty = retty->getChild(val2idx).getAsAggregateType();
+
+      for (unsigned i = 0, e = ty->numElementsConst(); i != e; ++i) {
+        auto ai = ty->extract(a, i);
+        auto bi = ty->extract(b, i);
+        auto [v1, v2] = zip_op(ai.value, ai.non_poison, bi.value,
+                               bi.non_poison);
+        vals1.emplace_back(std::move(v1));
+        vals2.emplace_back(std::move(v2));
+      }
+      vals.emplace_back(val1ty->aggregateVals(vals1));
+      vals.emplace_back(val2ty->aggregateVals(vals2));
+    } else {
+      StateValue tmp;
+      for (unsigned i = 0, e = retty->numElementsConst(); i != e; ++i) {
+        auto ai = retty->extract(a, i);
+        const StateValue *bi;
+        switch (op) {
+        case Abs:
+        case Cttz:
+        case Ctlz:
+          bi = &b;
+          break;
+        default:
+          tmp = retty->extract(b, i);
+          bi = &tmp;
+          break;
+        }
+        vals.emplace_back(scalar_op(ai.value, ai.non_poison, bi->value,
+                                    bi->non_poison));
+      }
+    }
+    return retty->aggregateVals(vals);
+  }
+
+  if (vertical_zip) {
+    vector<StateValue> vals;
+    auto [v1, v2] = zip_op(a.value, a.non_poison, b.value, b.non_poison);
+    vals.emplace_back(std::move(v1));
+    vals.emplace_back(std::move(v2));
+    return getType().getAsAggregateType()->aggregateVals(vals);
+  }
+  return scalar_op(a.value, a.non_poison, b.value, b.non_poison);
+}
+
+expr BinOp::getTypeConstraints(const Function &f) const {
+  expr instrconstr;
+  switch (op) {
+  case SAdd_Overflow:
+  case UAdd_Overflow:
+  case SSub_Overflow:
+  case USub_Overflow:
+  case SMul_Overflow:
+  case UMul_Overflow:
+    instrconstr = getType().enforceStructType() &&
+                  lhs->getType().enforceIntOrVectorType() &&
+                  lhs->getType() == rhs->getType();
+
+    if (auto ty = getType().getAsStructType()) {
+      unsigned v2idx = 1 + ty->isPadding(1);
+      instrconstr &= ty->numElementsExcludingPadding() == 2 &&
+                     ty->getChild(0) == lhs->getType() &&
+                     ty->getChild(v2idx).enforceIntOrVectorType(1) &&
+                     ty->getChild(v2idx).enforceVectorTypeEquiv(lhs->getType());
+    }
+    break;
+  case Cttz:
+  case Ctlz:
+  case Abs:
+    instrconstr = getType().enforceIntOrVectorType() &&
+                  getType() == lhs->getType() &&
+                  rhs->getType().enforceIntType(1);
+    break;
+  default:
+    instrconstr = getType().enforceIntOrVectorType() &&
+                  getType() == lhs->getType() &&
+                  getType() == rhs->getType();
+    break;
+  }
+  return Value::getTypeConstraints() && std::move(instrconstr);
+}
+
+unique_ptr<Instr> BinOp::dup(const string &suffix) const {
+  return make_unique<BinOp>(getType(), getName()+suffix, *lhs, *rhs, op, flags);
+}
+
+bool BinOp::isDivOrRem() const {
+  switch (op) {
+  case Op::SDiv:
+  case Op::SRem:
+  case Op::UDiv:
+  case Op::URem:
+    return true;
+  default:
+    return false;
+  }
+}
+
+std::shared_ptr<util::ConcreteVal>
+BinOp::concreteEval(Interpreter &interpreter) const {
+  auto v_op = operands();
+  for (auto operand : v_op) {
+    auto I = interpreter.concrete_vals.find(operand);
+    if (I == interpreter.concrete_vals.end()) {
+      cout << "[BinOp::concreteEval] concrete values for operand not found. "
+              "Aborting\n";
+      assert(false);
+    }
+  }
+
+  auto lhs_concrete = interpreter.concrete_vals.find(lhs)->second;
+  auto rhs_concrete = interpreter.concrete_vals.find(rhs)->second;
+  auto lhs_vect = dynamic_cast<ConcreteValAggregate *>(lhs_concrete.get());
+  if (lhs_vect) {
+    auto res = shared_ptr<ConcreteVal>(ConcreteValAggregate::evalBinOp(
+        lhs_concrete.get(), rhs_concrete.get(), op, flags, interpreter));
+    if (!res) {
+      interpreter.setUnsupported("vector binop issue");
+    }
+    return res;
+  }
+  if (op == Op::Add) {
+    return shared_ptr<ConcreteVal>(
+        ConcreteValInt::add(lhs_concrete.get(), rhs_concrete.get(), flags));
+  } else if (op == Op::Sub) {
+    return shared_ptr<ConcreteVal>(
+        ConcreteValInt::sub(lhs_concrete.get(), rhs_concrete.get(), flags));
+  } else if (op == Op::Mul) {
+    return shared_ptr<ConcreteVal>(
+        ConcreteValInt::mul(lhs_concrete.get(), rhs_concrete.get(), flags));
+  } else if (op == Op::SDiv) {
+    return shared_ptr<ConcreteVal>(ConcreteValInt::sdiv(
+        lhs_concrete.get(), rhs_concrete.get(), flags, interpreter.UB_flag));
+  } else if (op == Op::UDiv) {
+    return shared_ptr<ConcreteVal>(ConcreteValInt::udiv(
+        lhs_concrete.get(), rhs_concrete.get(), flags, interpreter.UB_flag));
+  } else if (op == Op::SRem) {
+    return shared_ptr<ConcreteVal>(ConcreteValInt::srem(
+        lhs_concrete.get(), rhs_concrete.get(), flags, interpreter.UB_flag));
+  } else if (op == Op::URem) {
+    return shared_ptr<ConcreteVal>(ConcreteValInt::urem(
+        lhs_concrete.get(), rhs_concrete.get(), flags, interpreter.UB_flag));
+  } else if (op == Op::SAdd_Sat) {
+    return shared_ptr<ConcreteVal>(
+        ConcreteValInt::sAddSat(lhs_concrete.get(), rhs_concrete.get(), flags));
+  } else if (op == Op::UAdd_Sat) {
+    return shared_ptr<ConcreteVal>(
+        ConcreteValInt::uAddSat(lhs_concrete.get(), rhs_concrete.get(), flags));
+  } else if (op == Op::SSub_Sat) {
+    return shared_ptr<ConcreteVal>(
+        ConcreteValInt::sSubSat(lhs_concrete.get(), rhs_concrete.get(), flags));
+  } else if (op == Op::USub_Sat) {
+    return shared_ptr<ConcreteVal>(
+        ConcreteValInt::uSubSat(lhs_concrete.get(), rhs_concrete.get(), flags));
+  } else if (op == Op::SShl_Sat) {
+    return shared_ptr<ConcreteVal>(
+        ConcreteValInt::sShlSat(lhs_concrete.get(), rhs_concrete.get(), flags));
+  } else if (op == Op::UShl_Sat) {
+    return shared_ptr<ConcreteVal>(
+        ConcreteValInt::uShlSat(lhs_concrete.get(), rhs_concrete.get(), flags));
+  } else if (op == Op::And) {
+    return shared_ptr<ConcreteVal>(
+        ConcreteValInt::andOp(lhs_concrete.get(), rhs_concrete.get()));
+  } else if (op == Op::Or) {
+    return shared_ptr<ConcreteVal>(
+        ConcreteValInt::orOp(lhs_concrete.get(), rhs_concrete.get()));
+  } else if (op == Op::Xor) {
+    return shared_ptr<ConcreteVal>(
+        ConcreteValInt::xorOp(lhs_concrete.get(), rhs_concrete.get()));
+  } else if (op == Op::Abs) {
+    return shared_ptr<ConcreteVal>(
+        ConcreteValInt::abs(lhs_concrete.get(), rhs_concrete.get()));
+  } else if (op == Op::LShr) {
+    return shared_ptr<ConcreteVal>(
+        ConcreteValInt::lshr(lhs_concrete.get(), rhs_concrete.get(), flags));
+  } else if (op == Op::AShr) {
+    return shared_ptr<ConcreteVal>(
+        ConcreteValInt::ashr(lhs_concrete.get(), rhs_concrete.get(), flags));
+  } else if (op == Op::Shl) {
+    return shared_ptr<ConcreteVal>(
+        ConcreteValInt::shl(lhs_concrete.get(), rhs_concrete.get(), flags));
+  } else if (op == Op::Cttz) {
+    return shared_ptr<ConcreteVal>( 
+        ConcreteValInt::cttz(lhs_concrete.get(), rhs_concrete.get(), flags));
+  } else if (op == Op::Ctlz) {
+    return shared_ptr<ConcreteVal>(
+        ConcreteValInt::ctlz(lhs_concrete.get(), rhs_concrete.get(), flags));
+  } else if (op == Op::SAdd_Overflow || op == Op::UAdd_Overflow ||
+             op == Op::SSub_Overflow || op == Op::USub_Overflow ||
+             op == Op::SMul_Overflow || op == Op::UMul_Overflow) {
+    return shared_ptr<ConcreteVal>(ConcreteValInt::arithOverflow(
+        lhs_concrete.get(), rhs_concrete.get(), op));
+  } else {
+    interpreter.setUnsupported(getOpcodeName());
+    return nullptr;
+  }
+  UNREACHABLE();
+}
+
+vector<Value*> FpBinOp::operands() const {
+  return { lhs, rhs };
+}
+
+bool FpBinOp::propagatesPoison() const {
+  return true;
+}
+
+void FpBinOp::rauw(const Value &what, Value &with) {
+  RAUW(lhs);
+  RAUW(rhs);
+}
+
+void FpBinOp::print(ostream &os) const {
+  const char *str = nullptr;
+  switch (op) {
+  case FAdd:     str = "fadd "; break;
+  case FSub:     str = "fsub "; break;
+  case FMul:     str = "fmul "; break;
+  case FDiv:     str = "fdiv "; break;
+  case FRem:     str = "frem "; break;
+  case FMax:     str = "fmax "; break;
+  case FMin:     str = "fmin "; break;
+  case FMaximum: str = "fmaximum "; break;
+  case FMinimum: str = "fminimum "; break;
+  case CopySign: str = "copysign "; break;
+  }
+  os << getName() << " = " << str << fmath << *lhs << ", " << rhs->getName();
+  if (!rm.isDefault())
+    os << ", rounding=" << rm;
+  os << ", exceptions=" << ex;
 }
 
 static expr any_fp_zero(State &s, const expr &v) {
   expr is_zero = v.isFPZero();
   if (is_zero.isFalse())
     return v;
+
+  // any-fp-zero2(any-fp-zero1(x)) -> any-fp-zero2(x)
+  {
+    expr cond, neg, negv, val;
+    if (v.isIf(cond, neg, val) && neg.isFPNeg(negv) && negv.eq(val)) {
+      expr a, b;
+      if (cond.isAnd(a, b) && a.isVar() && a.fn_name().starts_with("anyzero") &&
+          b.isIsFPZero())
+        return any_fp_zero(s, val);
+    }
+  }
 
   expr var = expr::mkFreshVar("anyzero", true);
   s.addQuantVar(var);
@@ -263,6 +751,7 @@ static expr any_fp_zero(State &s, const expr &v) {
 
 static StateValue fm_poison(State &s, const expr &a, const expr &ap,
                             const expr &b, const expr &bp, const expr &c,
+                            const expr &cp,
                             function<expr(expr&,expr&,expr&)> fn,
                             FastMathFlags fmath, bool only_input,
                             int nary = 3) {
@@ -285,6 +774,8 @@ static StateValue fm_poison(State &s, const expr &a, const expr &ap,
   non_poison.add(ap);
   if (nary >= 2)
     non_poison.add(bp);
+  if (nary >= 3)
+    non_poison.add(cp);
 
   if (fmath.flags & FastMathFlags::NNaN) {
     non_poison.add(!a.isNaN());
@@ -323,16 +814,16 @@ static StateValue fm_poison(State &s, const expr &a, const expr &ap,
     s.doesApproximation("afn", val);
   }
   if (fmath.flags & FastMathFlags::NSZ && !only_input)
-    val = any_fp_zero(s, move(val));
+    val = any_fp_zero(s, std::move(val));
 
-  return { move(val), non_poison() };
+  return { std::move(val), non_poison() };
 }
 
 static StateValue fm_poison(State &s, const expr &a, const expr &ap,
                             const expr &b, const expr &bp,
                             function<expr(expr&,expr&)> fn,
                             FastMathFlags fmath, bool only_input) {
-  return fm_poison(s, move(a), ap, move(b), bp, expr(),
+  return fm_poison(s, std::move(a), ap, std::move(b), bp, expr(), expr(),
                    [&](expr &a, expr &b, expr &c) { return fn(a, b); },
                    fmath, only_input, 2);
 }
@@ -340,258 +831,68 @@ static StateValue fm_poison(State &s, const expr &a, const expr &ap,
 static StateValue fm_poison(State &s, const expr &a, const expr &ap,
                             function<expr(expr&)> fn,
                             FastMathFlags fmath, bool only_input) {
-  return fm_poison(s, move(a), ap, expr(), expr(), expr(),
+  return fm_poison(s, std::move(a), ap, expr(), expr(), expr(), expr(),
                    [&](expr &a, expr &b, expr &c) { return fn(a); },
                    fmath, only_input, 1);
 }
 
-StateValue BinOp::toSMT(State &s) const {
-  bool vertical_zip = false;
-  function<StateValue(const expr&, const expr&, const expr&, const expr&)>
-    fn, scalar_op;
+static StateValue round_value(const function<StateValue(FpRoundingMode)> &fn,
+                              const State &s, FpRoundingMode rm) {
+  if (rm.isDefault())
+    return fn(FpRoundingMode::RNE);
+
+  auto &var = s.getFpRoundingMode();
+  if (!rm.isDynamic()) {
+    auto [v, np] = fn(rm);
+    return { std::move(v), np && var == rm.getMode() };
+  }
+
+  return StateValue::mkIf(var == FpRoundingMode::RNE, fn(FpRoundingMode::RNE),
+         StateValue::mkIf(var == FpRoundingMode::RNA, fn(FpRoundingMode::RNA),
+         StateValue::mkIf(var == FpRoundingMode::RTP, fn(FpRoundingMode::RTP),
+         StateValue::mkIf(var == FpRoundingMode::RTN, fn(FpRoundingMode::RTN),
+                          fn(FpRoundingMode::RTZ)))));
+}
+
+StateValue FpBinOp::toSMT(State &s) const {
+  function<StateValue(const expr&, const expr&, const expr&, const expr&,
+                      FpRoundingMode)> fn;
 
   switch (op) {
-  case Add:
-    fn = [&](auto a, auto ap, auto b, auto bp) -> StateValue {
-      expr non_poison = true;
-      if (flags & NSW)
-        non_poison &= a.add_no_soverflow(b);
-      if (flags & NUW)
-        non_poison &= a.add_no_uoverflow(b);
-      return { a + b, move(non_poison) };
-    };
-    break;
-
-  case Sub:
-    fn = [&](auto a, auto ap, auto b, auto bp) -> StateValue {
-      expr non_poison = true;
-      if (flags & NSW)
-        non_poison &= a.sub_no_soverflow(b);
-      if (flags & NUW)
-        non_poison &= a.sub_no_uoverflow(b);
-      return { a - b, move(non_poison) };
-    };
-    break;
-
-  case Mul:
-    fn = [&](auto a, auto ap, auto b, auto bp) -> StateValue {
-      expr non_poison = true;
-      if (flags & NSW)
-        non_poison &= a.mul_no_soverflow(b);
-      if (flags & NUW)
-        non_poison &= a.mul_no_uoverflow(b);
-      return { a * b, move(non_poison) };
-    };
-    break;
-
-  case SDiv:
-    fn = [&](auto a, auto ap, auto b, auto bp) -> StateValue {
-      expr non_poison = true;
-      div_ub(s, a, b, ap, bp, true);
-      if (flags & Exact)
-        non_poison = a.sdiv_exact(b);
-      return { a.sdiv(b), move(non_poison) };
-    };
-    break;
-
-  case UDiv:
-    fn = [&](auto a, auto ap, auto b, auto bp) -> StateValue {
-      expr non_poison = true;
-      div_ub(s, a, b, ap, bp, false);
-      if (flags & Exact)
-        non_poison &= a.udiv_exact(b);
-      return { a.udiv(b), move(non_poison) };
-    };
-    break;
-
-  case SRem:
-    fn = [&](auto a, auto ap, auto b, auto bp) -> StateValue {
-      div_ub(s, a, b, ap, bp, true);
-      return { a.srem(b), true };
-    };
-    break;
-
-  case URem:
-    fn = [&](auto a, auto ap, auto b, auto bp) -> StateValue {
-      div_ub(s, a, b, ap, bp, false);
-      return { a.urem(b), true };
-    };
-    break;
-
-  case Shl:
-    fn = [&](auto a, auto ap, auto b, auto bp) -> StateValue {
-      auto non_poison = b.ult(b.bits());
-      if (flags & NSW)
-        non_poison &= a.shl_no_soverflow(b);
-      if (flags & NUW)
-        non_poison &= a.shl_no_uoverflow(b);
-
-      return { a << b, move(non_poison) };
-    };
-    break;
-
-  case AShr:
-    fn = [&](auto a, auto ap, auto b, auto bp) -> StateValue {
-      auto non_poison = b.ult(b.bits());
-      if (flags & Exact)
-        non_poison &= a.ashr_exact(b);
-      return { a.ashr(b), move(non_poison) };
-    };
-    break;
-
-  case LShr:
-    fn = [&](auto a, auto ap, auto b, auto bp) -> StateValue {
-      auto non_poison = b.ult(b.bits());
-      if (flags & Exact)
-        non_poison &= a.lshr_exact(b);
-      return { a.lshr(b), move(non_poison) };
-    };
-    break;
-
-  case SAdd_Sat:
-    fn = [](auto a, auto ap, auto b, auto bp) -> StateValue {
-      return { a.sadd_sat(b), true };
-    };
-    break;
-
-  case UAdd_Sat:
-    fn = [](auto a, auto ap, auto b, auto bp) -> StateValue {
-      return { a.uadd_sat(b), true };
-    };
-    break;
-
-  case SSub_Sat:
-    fn = [](auto a, auto ap, auto b, auto bp) -> StateValue {
-      return { a.ssub_sat(b), true };
-    };
-    break;
-
-  case USub_Sat:
-    fn = [](auto a, auto ap, auto b, auto bp) -> StateValue {
-      return { a.usub_sat(b), true };
-    };
-    break;
-
-  case SShl_Sat:
-    fn = [](auto a, auto ap, auto b, auto bp) -> StateValue {
-      return {a.sshl_sat(b), b.ult(b.bits())};
-    };
-    break;
-
-  case UShl_Sat:
-    fn = [](auto a, auto ap, auto b, auto bp) -> StateValue {
-      return {a.ushl_sat(b), b.ult(b.bits())};
-    };
-    break;
-
-  case And:
-    fn = [](auto a, auto ap, auto b, auto bp) -> StateValue {
-      return { a & b, true };
-    };
-    break;
-
-  case Or:
-    fn = [](auto a, auto ap, auto b, auto bp) -> StateValue {
-      return { a | b, true };
-    };
-    break;
-
-  case Xor:
-    fn = [](auto a, auto ap, auto b, auto bp) -> StateValue {
-      return { a ^ b, true };
-    };
-    break;
-
-  case Cttz:
-    fn = [](auto a, auto ap, auto b, auto bp) -> StateValue {
-      return { a.cttz(expr::mkUInt(a.bits(), a)),
-               b == 0u || a != 0u };
-    };
-    break;
-
-  case Ctlz:
-    fn = [](auto a, auto ap, auto b, auto bp) -> StateValue {
-      return { a.ctlz(),
-               b == 0u || a != 0u };
-    };
-    break;
-
-  case SAdd_Overflow:
-    vertical_zip = true;
-    fn = [](auto a, auto ap, auto b, auto bp) -> StateValue {
-      return { a + b, (!a.add_no_soverflow(b)).toBVBool() };
-    };
-    break;
-
-  case UAdd_Overflow:
-    vertical_zip = true;
-    fn = [](auto a, auto ap, auto b, auto bp) -> StateValue {
-      return { a + b, (!a.add_no_uoverflow(b)).toBVBool() };
-    };
-    break;
-
-  case SSub_Overflow:
-    vertical_zip = true;
-    fn = [](auto a, auto ap, auto b, auto bp) -> StateValue {
-      return { a - b, (!a.sub_no_soverflow(b)).toBVBool() };
-    };
-    break;
-
-  case USub_Overflow:
-    vertical_zip = true;
-    fn = [](auto a, auto ap, auto b, auto bp) -> StateValue {
-      return { a - b, (!a.sub_no_uoverflow(b)).toBVBool() };
-    };
-    break;
-
-  case SMul_Overflow:
-    vertical_zip = true;
-    fn = [](auto a, auto ap, auto b, auto bp) -> StateValue {
-      return { a * b, (!a.mul_no_soverflow(b)).toBVBool() };
-    };
-    break;
-
-  case UMul_Overflow:
-    vertical_zip = true;
-    fn = [](auto a, auto ap, auto b, auto bp) -> StateValue {
-      return { a * b, (!a.mul_no_uoverflow(b)).toBVBool() };
-    };
-    break;
-
   case FAdd:
-    fn = [&](auto a, auto ap, auto b, auto bp) -> StateValue {
+    fn = [&](auto &a, auto &ap, auto &b, auto &bp, auto rm) -> StateValue {
       return fm_poison(s, a, ap, b, bp,
-                       [](expr &a, expr &b) { return a.fadd(b); },
+                       [&](expr &a, expr &b) { return a.fadd(b, rm.toSMT()); },
                        fmath, false);
     };
     break;
 
   case FSub:
-    fn = [&](auto a, auto ap, auto b, auto bp) -> StateValue {
+    fn = [&](auto &a, auto &ap, auto &b, auto &bp, auto rm) -> StateValue {
       return fm_poison(s, a, ap, b, bp,
-                       [](expr &a, expr &b) { return a.fsub(b); },
+                       [&](expr &a, expr &b) { return a.fsub(b, rm.toSMT()); },
                        fmath, false);
     };
     break;
 
   case FMul:
-    fn = [&](auto a, auto ap, auto b, auto bp) -> StateValue {
+    fn = [&](auto &a, auto &ap, auto &b, auto &bp, auto rm) -> StateValue {
       return fm_poison(s, a, ap, b, bp,
-                       [](expr &a, expr &b) { return a.fmul(b); },
+                       [&](expr &a, expr &b) { return a.fmul(b, rm.toSMT()); },
                        fmath, false);
     };
     break;
 
   case FDiv:
-    fn = [&](auto a, auto ap, auto b, auto bp) -> StateValue {
+    fn = [&](auto &a, auto &ap, auto &b, auto &bp, auto rm) -> StateValue {
       return fm_poison(s, a, ap, b, bp,
-                       [](expr &a, expr &b) { return a.fdiv(b); },
+                       [&](expr &a, expr &b) { return a.fdiv(b, rm.toSMT()); },
                        fmath, false);
     };
     break;
 
   case FRem:
-    fn = [&](auto a, auto ap, auto b, auto bp) -> StateValue {
+    fn = [&](auto &a, auto &ap, auto &b, auto &bp, auto rm) -> StateValue {
       // TODO; Z3 has no support for LLVM's frem which is actually an fmod
       return fm_poison(s, a, ap, b, bp,
                        [&](expr &a, expr &b) {
@@ -605,7 +906,7 @@ StateValue BinOp::toSMT(State &s) const {
 
   case FMin:
   case FMax:
-    fn = [&](auto a, auto ap, auto b, auto bp) -> StateValue {
+    fn = [&](auto &a, auto &ap, auto &b, auto &bp, auto rm) -> StateValue {
       expr ndet = expr::mkFreshVar("maxminnondet", true);
       s.addQuantVar(ndet);
       auto ndz = expr::mkIf(ndet, expr::mkNumber("0", a),
@@ -613,7 +914,7 @@ StateValue BinOp::toSMT(State &s) const {
 
       auto v = [&](expr &a, expr &b) {
         expr z = a.isFPZero() && b.isFPZero();
-        expr cmp = (op == FMin) ? a.fole(b) : a.foge(b);
+        expr cmp = op == FMin ? a.fole(b) : a.foge(b);
         return expr::mkIf(a.isNaN(), b,
                           expr::mkIf(b.isNaN(), a,
                                      expr::mkIf(z, ndz,
@@ -625,7 +926,7 @@ StateValue BinOp::toSMT(State &s) const {
 
   case FMinimum:
   case FMaximum:
-    fn = [&](auto a, auto ap, auto b, auto bp) -> StateValue {
+    fn = [&](auto &a, auto &ap, auto &b, auto &bp, auto rm) -> StateValue {
       auto v = [&](expr &a, expr &b) {
         expr zpos = expr::mkNumber("0", a), zneg = expr::mkNumber("-0", a);
         expr cmp = (op == FMinimum) ? a.fole(b) : a.foge(b);
@@ -640,333 +941,106 @@ StateValue BinOp::toSMT(State &s) const {
       return fm_poison(s, a, ap, b, bp, v, fmath, false);
     };
     break;
-
-  case UMin:
-  case UMax:
-  case SMin:
-  case SMax:
-    fn = [&](auto a, auto ap, auto b, auto bp) -> StateValue {
-      expr v;
-      switch (op) {
-      case UMin:
-        v = a.umin(b);
-        break;
-      case UMax:
-        v = a.umax(b);
-        break;
-      case SMin:
-        v = a.smin(b);
-        break;
-      case SMax:
-        v = a.smax(b);
-        break;
-      default:
-        UNREACHABLE();
-      }
-      return { move(v), ap && bp };
-    };
-    break;
-
-  case Abs:
-    fn = [&](auto a, auto ap, auto b, auto bp) -> StateValue {
-      return { a.abs(), ap && bp && (b == 0 || a != expr::IntSMin(a.bits())) };
+  case CopySign:
+    fn = [&](auto &a, auto &ap, auto &b, auto &bp, auto rm) -> StateValue {
+      return fm_poison(s, a, ap, b, bp,
+                       [](expr &a, expr &b) {
+                         return expr::mkIf(a.isFPNegative() == b.isFPNegative(),
+                                           a, a.fneg()); },
+                       fmath, false);
     };
     break;
   }
 
-  function<pair<StateValue,StateValue>(const expr&, const expr&, const expr&,
-                                       const expr&)> zip_op;
-  if (vertical_zip) {
-    zip_op = [&](auto a, auto ap, auto b, auto bp) {
-      auto [v1, v2] = fn(a, ap, b, bp);
-      expr non_poison = ap && bp;
-      StateValue sv1(move(v1), expr(non_poison));
-      return make_pair(move(sv1), StateValue(move(v2), move(non_poison)));
-    };
-  } else {
-    scalar_op = [&](auto a, auto ap, auto b, auto bp) -> StateValue {
-      auto [v, np] = fn(a, ap, b, bp);
-      return { move(v), ap && (isDivOrRem() ? expr(true) : bp) && np };
-    };
-  }
+  auto scalar = [&](const auto &a, const auto &b) {
+    return round_value([&](auto rm) {
+      return fn(a.value, a.non_poison, b.value, b.non_poison, rm);
+    }, s, rm);
+  };
 
   auto &a = s[*lhs];
-  auto &b = isDivOrRem() ? s.getAndAddPoisonUB(*rhs) : s[*rhs];
+  auto &b = s[*rhs];
 
   if (lhs->getType().isVectorType()) {
     auto retty = getType().getAsAggregateType();
     vector<StateValue> vals;
-
-    if (vertical_zip) {
-      auto ty = lhs->getType().getAsAggregateType();
-      vector<StateValue> vals1, vals2;
-      unsigned val2idx = 1 + retty->isPadding(1);
-      auto val1ty = retty->getChild(0).getAsAggregateType();
-      auto val2ty = retty->getChild(val2idx).getAsAggregateType();
-
-      for (unsigned i = 0, e = ty->numElementsConst(); i != e; ++i) {
-        auto ai = ty->extract(a, i);
-        auto bi = ty->extract(b, i);
-        auto [v1, v2] = zip_op(ai.value, ai.non_poison, bi.value,
-                               bi.non_poison);
-        vals1.emplace_back(move(v1));
-        vals2.emplace_back(move(v2));
-      }
-      vals.emplace_back(val1ty->aggregateVals(vals1));
-      vals.emplace_back(val2ty->aggregateVals(vals2));
-    } else {
-      StateValue tmp;
-      for (unsigned i = 0, e = retty->numElementsConst(); i != e; ++i) {
-        auto ai = retty->extract(a, i);
-        const StateValue *bi;
-        switch (op) {
-        case Abs:
-        case Cttz:
-        case Ctlz:
-          bi = &b;
-          break;
-        default:
-          tmp = retty->extract(b, i);
-          bi = &tmp;
-          break;
-        }
-        vals.emplace_back(scalar_op(ai.value, ai.non_poison, bi->value,
-                                    bi->non_poison));
-      }
+    for (unsigned i = 0, e = retty->numElementsConst(); i != e; ++i) {
+      vals.emplace_back(scalar(retty->extract(a, i), retty->extract(b, i)));
     }
     return retty->aggregateVals(vals);
   }
-
-  if (vertical_zip) {
-    vector<StateValue> vals;
-    auto [v1, v2] = zip_op(a.value, a.non_poison, b.value, b.non_poison);
-    vals.emplace_back(move(v1));
-    vals.emplace_back(move(v2));
-    return getType().getAsAggregateType()->aggregateVals(vals);
-  }
-  return scalar_op(a.value, a.non_poison, b.value, b.non_poison);
+  return scalar(a, b);
 }
 
-expr BinOp::getTypeConstraints(const Function &f) const {
-  expr instrconstr;
-  switch (op) {
-  case SAdd_Overflow:
-  case UAdd_Overflow:
-  case SSub_Overflow:
-  case USub_Overflow:
-  case SMul_Overflow:
-  case UMul_Overflow:
-    instrconstr = getType().enforceStructType() &&
-                  lhs->getType().enforceIntOrVectorType() &&
-                  lhs->getType() == rhs->getType();
-
-    if (auto ty = getType().getAsStructType()) {
-      unsigned v2idx = 1 + ty->isPadding(1);
-      instrconstr &= ty->numElementsExcludingPadding() == 2 &&
-                     ty->getChild(0) == lhs->getType() &&
-                     ty->getChild(v2idx).enforceIntOrVectorType(1) &&
-                     ty->getChild(v2idx).enforceVectorTypeEquiv(lhs->getType());
-    }
-    break;
-  case Cttz:
-  case Ctlz:
-  case Abs:
-    instrconstr = getType().enforceIntOrVectorType() &&
-                  getType() == lhs->getType() &&
-                  rhs->getType().enforceIntType(1);
-    break;
-  case FAdd:
-  case FSub:
-  case FMul:
-  case FDiv:
-  case FRem:
-  case FMax:
-  case FMin:
-  case FMaximum:
-  case FMinimum:
-    instrconstr = getType().enforceFloatOrVectorType() &&
-                  getType() == lhs->getType() &&
-                  getType() == rhs->getType();
-    break;
-  default:
-    instrconstr = getType().enforceIntOrVectorType() &&
-                  getType() == lhs->getType() &&
-                  getType() == rhs->getType();
-    break;
-  }
-  return Value::getTypeConstraints() && move(instrconstr);
+expr FpBinOp::getTypeConstraints(const Function &f) const {
+  return Value::getTypeConstraints() &&
+         getType().enforceFloatOrVectorType() &&
+         getType() == lhs->getType() &&
+         getType() == rhs->getType();
 }
 
-unique_ptr<Instr> BinOp::dup(const string &suffix) const {
-  return make_unique<BinOp>(getType(), getName()+suffix, *lhs, *rhs, op, flags,
-                            fmath);
+unique_ptr<Instr> FpBinOp::dup(const string &suffix) const {
+  return make_unique<FpBinOp>(getType(), getName()+suffix, *lhs, *rhs, op,
+                              fmath);
 }
 
-bool BinOp::isDivOrRem() const {
-  switch (op) {
-  case Op::SDiv:
-  case Op::SRem:
-  case Op::UDiv:
-  case Op::URem:
-    return true;
-  default:
-    return false;
-  }
-}
-
-util::ConcreteVal * BinOp::concreteEval(std::map<const Value *, util::ConcreteVal *> &concrete_vals, bool &UB_flag) const{
+std::shared_ptr<util::ConcreteVal>
+FpBinOp::concreteEval(Interpreter &interpreter) const {
   auto v_op = operands();
-  for (auto operand: v_op){
-      auto I = concrete_vals.find(operand);
-      if (I == concrete_vals.end()){
-        cout << "[BinOp::concreteEval] concrete values for operand not found. Aborting" << '\n';
-        assert(false);
-      }
-  }  
-  
-  // bool firstOp = true;
-  // bool nsw_flag = flags & NSW;
-  // bool nuw_flag = flags & NUW;
-  // bool exact_flag = flags & Exact;
-  auto lhs_concrete = concrete_vals.find(lhs)->second;
-  auto rhs_concrete = concrete_vals.find(rhs)->second;
-  if (op == Op::Add) {
-    auto lhs_vect = dynamic_cast<ConcreteValVect *>(lhs_concrete);
-    if (lhs_vect) {
-      cout << "bin op encountered vector operand" << '\n';
-      auto res_elems = ConcreteValVect::make_elements(lhs);
-      auto v = new ConcreteValVect(false, move(res_elems));
-      return v;
+  for (auto operand : v_op) {
+    auto I = interpreter.concrete_vals.find(operand);
+    if (I == interpreter.concrete_vals.end()) {
+      cout << "[FPBinOp::concreteEval] concrete values for operand not found. "
+              "Aborting\n";
+      assert(false);
     }
-    auto v = ConcreteValInt::add(lhs_concrete, rhs_concrete, flags);
-    return v;
   }
-  else if (op == Op::Sub) {
-    auto v = ConcreteValInt::sub(lhs_concrete, rhs_concrete, flags);
-    return v;
+
+  auto lhs_concrete = interpreter.concrete_vals.find(lhs)->second;
+  auto rhs_concrete = interpreter.concrete_vals.find(rhs)->second;
+  auto lhs_vect = dynamic_cast<ConcreteValAggregate *>(lhs_concrete.get());
+  if (lhs_vect) {
+    auto res = shared_ptr<ConcreteVal>(ConcreteValAggregate::evalFPBinOp(
+        lhs_concrete.get(), rhs_concrete.get(), op, fmath, interpreter));
+    if (!res) {
+      interpreter.setUnsupported("vector binop issue");
+    }
+    return res;
   }
-  else if (op == Op::Mul) {
-    auto v = ConcreteValInt::mul(lhs_concrete, rhs_concrete, flags);
-    return v;
-  }
-  else if (op == Op::SDiv) {
-    auto v = ConcreteValInt::sdiv(lhs_concrete, rhs_concrete, flags, UB_flag);
-    return v;
-  }
-  else if (op == Op::UDiv) {
-    auto v = ConcreteValInt::udiv(lhs_concrete, rhs_concrete, flags, UB_flag);
-    return v;
-  }
-  else if (op == Op::SRem) {
-    auto v = ConcreteValInt::srem(lhs_concrete, rhs_concrete, flags, UB_flag);
-    return v;
-  }
-  else if (op == Op::URem) {
-    auto v = ConcreteValInt::urem(lhs_concrete, rhs_concrete, flags, UB_flag);
-    return v;
-  }
-  else if (op == Op::SAdd_Sat) {
-    auto v = ConcreteValInt::sAddSat(lhs_concrete, rhs_concrete, flags);
-    return v;
-  }
-  else if (op == Op::UAdd_Sat) {
-    auto v = ConcreteValInt::uAddSat(lhs_concrete, rhs_concrete, flags);
-    return v;
-  }
-  else if (op == Op::SSub_Sat) {
-    auto v = ConcreteValInt::sSubSat(lhs_concrete, rhs_concrete, flags);
-    return v;
-  }
-  else if (op == Op::USub_Sat) {
-    auto v = ConcreteValInt::uSubSat(lhs_concrete, rhs_concrete, flags);
-    return v;
-  }
-  else if (op == Op::SShl_Sat) {
-    auto v = ConcreteValInt::sShlSat(lhs_concrete, rhs_concrete, flags);
-    return v;
-  }
-  else if (op == Op::UShl_Sat) { 
-    auto v = ConcreteValInt::uShlSat(lhs_concrete, rhs_concrete, flags);
-    return v;
-  }
-  else if (op == Op::FAdd) {
-    auto v = ConcreteValFloat::fadd(lhs_concrete, rhs_concrete, fmath);
-    return v;
-  }
-  else if (op == Op::FSub) {
-    auto v = ConcreteValFloat::fsub(lhs_concrete, rhs_concrete, fmath);
-    return v;
-  }
-  else if (op == Op::FMul) {
-    auto v = ConcreteValFloat::fmul(lhs_concrete, rhs_concrete, fmath);
-    return v;
-  }
-  else if (op == Op::FDiv) {
-    auto v = ConcreteValFloat::fdiv(lhs_concrete, rhs_concrete, fmath);
-    return v;
-  }
-  else if (op == Op::FRem) {
-    auto v = ConcreteValFloat::frem(lhs_concrete, rhs_concrete, fmath);
-    return v;
-  }
-  else if (op == Op::FMax){
-    auto v = ConcreteValFloat::fmax(lhs_concrete, rhs_concrete, fmath);
-    return v;
-  }
-  else if (op == Op::FMin){
-    auto v = ConcreteValFloat::fmin(lhs_concrete, rhs_concrete, fmath);
-    return v;
-  }
-  else if (op == Op::FMaximum){
-    auto v = ConcreteValFloat::fmaximum(lhs_concrete, rhs_concrete, fmath);
-    return v;
-  }
-  else if (op == Op::FMinimum){
-    auto v = ConcreteValFloat::fminimum(lhs_concrete, rhs_concrete, fmath);
-    return v;
-  }
-  else if (op == Op::And){
-    auto v = ConcreteValInt::andOp(lhs_concrete, rhs_concrete);
-    return v;
-  }
-  else if (op == Op::Or){
-    auto v = ConcreteValInt::orOp(lhs_concrete, rhs_concrete);
-    return v;
-  }
-  else if (op == Op::Xor){
-    auto v = ConcreteValInt::xorOp(lhs_concrete, rhs_concrete);
-    return v;
-  }
-  else if (op == Op::Abs){
-    auto v = ConcreteValInt::abs(lhs_concrete, rhs_concrete);
-    return v;
-  }
-  else if (op == Op::LShr) {
-    auto v = ConcreteValInt::lshr(lhs_concrete, rhs_concrete, flags);
-    return v;
-  }
-  else if (op == Op::AShr) {
-    auto v = ConcreteValInt::ashr(lhs_concrete, rhs_concrete, flags);
-    return v;
-  }
-  else if (op == Op::Shl) {
-    auto v = ConcreteValInt::shl(lhs_concrete, rhs_concrete, flags);
-    return v;
-  }
-  else if (op == Op::Cttz) {
-    auto v = ConcreteValInt::cttz(lhs_concrete, rhs_concrete, flags);
-    return v;
-  }
-  else if (op == Op::Ctlz) {
-    auto v = ConcreteValInt::ctlz(lhs_concrete, rhs_concrete, flags);
-    return v;
-  }
-  else{
-    cout << "[BinOP:concreteEval] not supported on this instruction yet" << '\n';
+
+  if (op == Op::FAdd) {
+    return shared_ptr<ConcreteVal>(
+        ConcreteValFloat::fadd(lhs_concrete.get(), rhs_concrete.get(), fmath));
+  } else if (op == Op::FSub) {
+    return shared_ptr<ConcreteVal>(
+        ConcreteValFloat::fsub(lhs_concrete.get(), rhs_concrete.get(), fmath));
+  } else if (op == Op::FMul) {
+    return shared_ptr<ConcreteVal>(
+        ConcreteValFloat::fmul(lhs_concrete.get(), rhs_concrete.get(), fmath));
+  } else if (op == Op::FDiv) {
+    return shared_ptr<ConcreteVal>(
+        ConcreteValFloat::fdiv(lhs_concrete.get(), rhs_concrete.get(), fmath));
+  } else if (op == Op::FRem) {
+    return shared_ptr<ConcreteVal>(
+        ConcreteValFloat::frem(lhs_concrete.get(), rhs_concrete.get(), fmath));
+  } else if (op == Op::FMax) {
+    return shared_ptr<ConcreteVal>(
+        ConcreteValFloat::fmax(lhs_concrete.get(), rhs_concrete.get(), fmath));
+  } else if (op == Op::FMin) {
+    return shared_ptr<ConcreteVal>(
+        ConcreteValFloat::fmin(lhs_concrete.get(), rhs_concrete.get(), fmath));
+  } else if (op == Op::FMaximum) {
+    return shared_ptr<ConcreteVal>(ConcreteValFloat::fmaximum(
+        lhs_concrete.get(), rhs_concrete.get(), fmath));
+  } else if (op == Op::FMinimum) {
+    return shared_ptr<ConcreteVal>(ConcreteValFloat::fminimum(
+        lhs_concrete.get(), rhs_concrete.get(), fmath));
+  } else {
+    interpreter.setUnsupported(getOpcodeName());
+    return nullptr;
   }
   UNREACHABLE();
 }
-
 
 vector<Value*> UnaryOp::operands() const {
   return { val };
@@ -988,19 +1062,10 @@ void UnaryOp::print(ostream &os) const {
   case BSwap:       str = "bswap "; break;
   case Ctpop:       str = "ctpop "; break;
   case IsConstant:  str = "is.constant "; break;
-  case FAbs:        str = "fabs "; break;
-  case FNeg:        str = "fneg "; break;
-  case Ceil:        str = "ceil "; break;
-  case Floor:       str = "floor "; break;
-  case Round:       str = "round "; break;
-  case RoundEven:   str = "roundeven "; break;
-  case Trunc:       str = "trunc "; break;
-  case Sqrt:        str = "sqrt "; break;
   case FFS:         str = "ffs "; break;
   }
 
-  os << getName() << " = " << str << fmath << print_type(getType())
-     << val->getName();
+  os << getName() << " = " << str << *val;
 }
 
 StateValue UnaryOp::toSMT(State &s) const {
@@ -1013,75 +1078,32 @@ StateValue UnaryOp::toSMT(State &s) const {
       return val->toSMT(s);
     return s[*val];
   case BitReverse:
-    fn = [](auto v, auto np) -> StateValue {
+    fn = [](auto &v, auto np) -> StateValue {
       return { v.bitreverse(), expr(np) };
     };
     break;
   case BSwap:
-    fn = [](auto v, auto np) -> StateValue {
+    fn = [](auto &v, auto np) -> StateValue {
       return { v.bswap(), expr(np) };
     };
     break;
   case Ctpop:
-    fn = [](auto v, auto np) -> StateValue {
+    fn = [](auto &v, auto np) -> StateValue {
       return { v.ctpop(), expr(np) };
     };
     break;
   case IsConstant: {
     expr one = expr::mkUInt(1, 1);
     if (dynamic_cast<Constant *>(val))
-      return { move(one), true };
+      return { std::move(one), true };
 
     // may or may not be a constant
     expr var = expr::mkFreshVar("is.const", one);
     s.addQuantVar(var);
-    return { move(var), true };
+    return { std::move(var), true };
   }
-  case FAbs:
-    fn = [&](auto v, auto np) -> StateValue {
-      return fm_poison(s, v, np, [](expr &v) { return v.fabs(); }, fmath, true);
-    };
-    break;
-  case FNeg:
-    fn = [&](auto v, auto np) -> StateValue {
-      return fm_poison(s, v, np, [](expr &v){ return v.fneg(); }, fmath, false);
-    };
-    break;
-  case Ceil:
-    fn = [&](auto v, auto np) -> StateValue {
-      return fm_poison(s, v, np, [](expr &v) { return v.ceil(); }, fmath, true);
-    };
-    break;
-  case Floor:
-    fn = [&](auto v, auto np) -> StateValue {
-      return fm_poison(s, v, np, [](expr &v) { return v.floor(); }, fmath, true);
-    };
-    break;
-  case Round:
-    fn = [&](auto v, auto np) -> StateValue {
-      return fm_poison(s, v, np,
-                       [](expr &v) { return v.roundna(); }, fmath, true);
-    };
-    break;
-  case RoundEven:
-    fn = [&](auto v, auto np) -> StateValue {
-      return fm_poison(s, v, np,
-                       [](expr &v) { return v.roundne(); }, fmath, true);
-    };
-    break;
-  case Trunc:
-    fn = [&](auto v, auto np) -> StateValue {
-      return fm_poison(s, v, np,
-                       [](expr &v) { return v.roundtz(); }, fmath, true);
-    };
-    break;
-  case Sqrt:
-    fn = [&](auto v, auto np) -> StateValue {
-      return fm_poison(s, v, np, [](expr &v){ return v.sqrt(); }, fmath, false);
-    };
-    break;
   case FFS:
-    fn = [](auto v, auto np) -> StateValue {
+    fn = [](auto &v, auto np) -> StateValue {
       return { v.cttz(expr::mkInt(-1, v)) + expr::mkUInt(1, v), expr(np) };
     };
     break;
@@ -1091,12 +1113,12 @@ StateValue UnaryOp::toSMT(State &s) const {
 
   if (getType().isVectorType()) {
     vector<StateValue> vals;
-    auto ty = getType().getAsAggregateType();
+    auto ty = val->getType().getAsAggregateType();
     for (unsigned i = 0, e = ty->numElementsConst(); i != e; ++i) {
       auto vi = ty->extract(v, i);
       vals.emplace_back(fn(vi.value, vi.non_poison));
     }
-    return ty->aggregateVals(vals);
+    return getType().getAsAggregateType()->aggregateVals(vals);
   }
   return fn(v.value, v.non_poison);
 }
@@ -1120,92 +1142,189 @@ expr UnaryOp::getTypeConstraints(const Function &f) const {
   case IsConstant:
     instrconstr = getType().enforceIntType(1);
     break;
-  case FAbs:
-  case FNeg:
-  case Ceil:
-  case Floor:
-  case Round:
-  case RoundEven:
-  case Trunc:
-  case Sqrt:
-    instrconstr &= getType().enforceFloatOrVectorType();
-    break;
   }
 
-  return Value::getTypeConstraints() && move(instrconstr);
+  return Value::getTypeConstraints() && std::move(instrconstr);
 }
 
 unique_ptr<Instr> UnaryOp::dup(const string &suffix) const {
-  return make_unique<UnaryOp>(getType(), getName() + suffix, *val, op, fmath);
+  return make_unique<UnaryOp>(getType(), getName() + suffix, *val, op);
 }
 
-bool UnaryOp::isFPInstr() const{
-  if (op == Op::FAbs || 
-      op == Op::FNeg ||
-      op == Op::Ceil ||
-      op == Op::Floor ||
-      op == Op::Round ||
-      op == Op::RoundEven ||
-      op == Op::Trunc || 
-      op == Op::Sqrt)
-      return true;
-  return false;
-}
-
-util::ConcreteVal * UnaryOp::concreteEval(std::map<const Value *, util::ConcreteVal *> &concrete_vals) const{
-  auto I = concrete_vals.find(val);
-  if (I == concrete_vals.end()){
+std::shared_ptr<util::ConcreteVal>
+UnaryOp::concreteEval(Interpreter &interpreter) const {
+  auto I = interpreter.concrete_vals.find(val);
+  if (I == interpreter.concrete_vals.end()) {
     cout << "[Unary::concreteEval] concrete value for operand not found. Aborting" << '\n';
     assert(false);
   }
-  
-  auto operand = I->second;
-  if (op == Op::FAbs) {
-    auto v = ConcreteValFloat::fabs(operand, fmath);
-    return v;
-  }
-  else if (op == Op::FNeg) {
-    auto v = ConcreteValFloat::fneg(operand, fmath);
-    return v;
-  }
-  if (op == Op::Ceil) {
-    auto v = ConcreteValFloat::ceil(operand, fmath);
-    return v;
-  }
-  else if (op == Op::Floor) {
-    auto v = ConcreteValFloat::floor(operand, fmath);
-    return v;
-  }
-  if (op == Op::Round) {
-    auto v = ConcreteValFloat::round(operand, fmath);
-    return v;
-  }
-  else if (op == Op::RoundEven) {
-    auto v = ConcreteValFloat::roundEven(operand, fmath);
-    return v;
-  }
-  else if (op == Op::Trunc) {
-    auto v = ConcreteValFloat::trunc(operand, fmath);
-    return v;
-  }
-  else if (op == Op::Ctpop) {
-    auto v = ConcreteValInt::ctpop(operand);
-    return v;
-  }
-  else if (op == Op::BitReverse) {
-    auto v = ConcreteValInt::bitreverse(operand);
-    return v;
-  }
-  else if (op == Op::BSwap) {
-    auto v = ConcreteValInt::bswap(operand);
-    return v;
-  }
-  else {
-    cout << "Error: ConcreteEval for unary op nut supported yet" << '\n';
+
+  auto operand = I->second.get();
+  if (op == Op::Ctpop) {
+    return shared_ptr<ConcreteVal>(ConcreteValInt::ctpop(operand));
+  } else if (op == Op::BitReverse) {
+    return shared_ptr<ConcreteVal>(ConcreteValInt::bitreverse(operand));
+  } else if (op == Op::BSwap) {
+    return shared_ptr<ConcreteVal>(ConcreteValInt::bswap(operand));
+  } else {
+    interpreter.setUnsupported(getOpcodeName());
     return nullptr;
   }
 
-  UNREACHABLE(); 
+  UNREACHABLE();
+}
+
+
+vector<Value*> FpUnaryOp::operands() const {
+  return { val };
+}
+
+bool FpUnaryOp::propagatesPoison() const {
+  return true;
+}
+
+void FpUnaryOp::rauw(const Value &what, Value &with) {
+  RAUW(val);
+}
+
+void FpUnaryOp::print(ostream &os) const {
+  const char *str = nullptr;
+  switch (op) {
+  case FAbs:      str = "fabs "; break;
+  case FNeg:      str = "fneg "; break;
+  case Ceil:      str = "ceil "; break;
+  case Floor:     str = "floor "; break;
+  case RInt:      str = "rint "; break;
+  case NearbyInt: str = "nearbyint "; break;
+  case Round:     str = "round "; break;
+  case RoundEven: str = "roundeven "; break;
+  case Trunc:     str = "trunc "; break;
+  case Sqrt:      str = "sqrt "; break;
+  }
+
+  os << getName() << " = " << str << fmath << *val;
+  if (!rm.isDefault())
+    os << ", rounding=" << rm;
+  os << ", exceptions=" << ex;
+}
+
+StateValue FpUnaryOp::toSMT(State &s) const {
+  function<StateValue(const expr&, const expr&, FpRoundingMode)> fn;
+
+  switch (op) {
+  case FAbs:
+    fn = [&](auto &v, auto &np, auto rm) -> StateValue {
+      return fm_poison(s, v, np, [](expr &v) { return v.fabs(); }, fmath, true);
+    };
+    break;
+  case FNeg:
+    fn = [&](auto &v, auto &np, auto rm) -> StateValue {
+      return fm_poison(s, v, np, [](expr &v){ return v.fneg(); }, fmath, false);
+    };
+    break;
+  case Ceil:
+    fn = [&](auto &v, auto &np, auto rm) -> StateValue {
+      return fm_poison(s, v, np, [](expr &v) { return v.ceil(); }, fmath, true);
+    };
+    break;
+  case Floor:
+    fn = [&](auto &v, auto &np, auto rm) -> StateValue {
+      return fm_poison(s, v, np, [](expr &v) { return v.floor(); }, fmath,
+                       true);
+    };
+    break;
+  case RInt:
+  case NearbyInt:
+    // TODO: they differ in exception behavior
+    fn = [&](auto &v, auto &np, auto rm) -> StateValue {
+      return fm_poison(s, v, np, [&](expr &v) { return v.round(rm.toSMT()); },
+                       fmath, true);
+    };
+    break;
+  case Round:
+    fn = [&](auto &v, auto &np, auto rm) -> StateValue {
+      return fm_poison(s, v, np, [](expr &v) { return v.round(expr::rna()); },
+                       fmath, true);
+    };
+    break;
+  case RoundEven:
+    fn = [&](auto &v, auto &np, auto rm) -> StateValue {
+      return fm_poison(s, v, np, [](expr &v) { return v.round(expr::rne()); },
+                       fmath, true);
+    };
+    break;
+  case Trunc:
+    fn = [&](auto &v, auto &np, auto rm) -> StateValue {
+      return fm_poison(s, v, np, [](expr &v) { return v.round(expr::rtz()); },
+                       fmath, true);
+    };
+    break;
+  case Sqrt:
+    fn = [&](auto &v, auto &np, auto rm) -> StateValue {
+      return fm_poison(s, v, np, [&](expr &v){ return v.sqrt(rm.toSMT()); },
+                       fmath, false);
+    };
+    break;
+  }
+
+  auto scalar = [&](const StateValue &v) {
+    return round_value([&](auto rm) { return fn(v.value, v.non_poison, rm); },
+                       s, rm);
+  };
+
+  auto &v = s[*val];
+
+  if (getType().isVectorType()) {
+    vector<StateValue> vals;
+    auto ty = val->getType().getAsAggregateType();
+    for (unsigned i = 0, e = ty->numElementsConst(); i != e; ++i) {
+      vals.emplace_back(scalar(ty->extract(v, i)));
+    }
+    return getType().getAsAggregateType()->aggregateVals(vals);
+  }
+  return scalar(v);
+}
+
+expr FpUnaryOp::getTypeConstraints(const Function &f) const {
+  return Value::getTypeConstraints() &&
+         getType() == val->getType() &&
+         getType().enforceFloatOrVectorType();
+}
+
+unique_ptr<Instr> FpUnaryOp::dup(const string &suffix) const {
+  return
+    make_unique<FpUnaryOp>(getType(), getName() + suffix, *val, op, fmath, rm);
+}
+
+std::shared_ptr<util::ConcreteVal>
+FpUnaryOp::concreteEval(Interpreter &interpreter) const {
+  auto I = interpreter.concrete_vals.find(val);
+  if (I == interpreter.concrete_vals.end()) {
+    cout << "[FpUnary::concreteEval] concrete value for operand not found. Aborting" << '\n';
+    assert(false);
+  }
+
+  auto operand = I->second.get();
+  if (op == Op::FAbs) {
+    return shared_ptr<ConcreteVal>(ConcreteValFloat::fabs(operand, fmath));
+  } else if (op == Op::FNeg) {
+    return shared_ptr<ConcreteVal>(ConcreteValFloat::fneg(operand, fmath));
+  } else if (op == Op::Ceil) {
+    return shared_ptr<ConcreteVal>(ConcreteValFloat::ceil(operand, fmath));
+  } else if (op == Op::Floor) {
+    return shared_ptr<ConcreteVal>(ConcreteValFloat::floor(operand, fmath));
+  } else if (op == Op::Round) {
+    return shared_ptr<ConcreteVal>(ConcreteValFloat::round(operand, fmath));
+  } else if (op == Op::RoundEven) {
+    return shared_ptr<ConcreteVal>(ConcreteValFloat::roundEven(operand, fmath));
+  } else if (op == Op::Trunc) {
+    return shared_ptr<ConcreteVal>(ConcreteValFloat::trunc(operand, fmath));
+  } else {
+    interpreter.setUnsupported(getOpcodeName());
+    return nullptr;
+  }
+
+  UNREACHABLE();
 }
 
 vector<Value*> UnaryReductionOp::operands() const {
@@ -1245,7 +1364,7 @@ StateValue UnaryReductionOp::toSMT(State &s) const {
   for (unsigned i = 0, e = vty->numElementsConst(); i != e; ++i) {
     auto ith = vty->extract(v, i);
     if (i == 0) {
-      res = move(ith);
+      res = std::move(ith);
       continue;
     }
     switch (op) {
@@ -1267,43 +1386,16 @@ StateValue UnaryReductionOp::toSMT(State &s) const {
 }
 
 expr UnaryReductionOp::getTypeConstraints(const Function &f) const {
-  expr instrconstr = getType() == val->getType();
-  switch(op) {
-  case Add:
-  case Mul:
-  case And:
-  case Or:
-  case Xor:
-  case SMax:
-  case SMin:
-  case UMax:
-  case UMin:
-    instrconstr = getType().enforceIntType();
-    instrconstr &= val->getType().enforceVectorType(
-        [this](auto &scalar) { return scalar == getType(); });
-    break;
-  }
-
-  return Value::getTypeConstraints() && move(instrconstr);
+  return Value::getTypeConstraints() &&
+         getType().enforceIntType() &&
+         val->getType().enforceVectorType(
+           [this](auto &scalar) { return scalar == getType(); });
 }
 
 unique_ptr<Instr> UnaryReductionOp::dup(const string &suffix) const {
   return make_unique<UnaryReductionOp>(getType(), getName() + suffix, *val, op);
 }
 
-
-TernaryOp::TernaryOp(Type &type, string &&name, Value &a, Value &b, Value &c,
-                     Op op, FastMathFlags fmath)
-    : Instr(type, move(name)), a(&a), b(&b), c(&c), op(op), fmath(fmath) {
-  switch (op) {
-    case FShr:
-    case FShl:
-      assert(fmath.isNone());
-      break;
-    case FMA:
-      break;
-  }
-}
 
 vector<Value*> TernaryOp::operands() const {
   return { a, b, c };
@@ -1322,109 +1414,201 @@ void TernaryOp::rauw(const Value &what, Value &with) {
 void TernaryOp::print(ostream &os) const {
   const char *str = nullptr;
   switch (op) {
-  case FShl:
-    str = "fshl ";
-    break;
-  case FShr:
-    str = "fshr ";
-    break;
-  case FMA:
-    str = "fma ";
-    break;
+  case FShl: str = "fshl "; break;
+  case FShr: str = "fshr "; break;
   }
 
-  os << getName() << " = " << str << fmath << *a << ", " << *b << ", " << *c;
+  os << getName() << " = " << str << *a << ", " << *b << ", " << *c;
 }
 
 StateValue TernaryOp::toSMT(State &s) const {
   auto &av = s[*a];
   auto &bv = s[*b];
   auto &cv = s[*c];
-  function<StateValue(const expr&, const expr&, const expr&)> fn;
+  function<expr(const expr&, const expr&, const expr&)> fn;
 
   switch (op) {
   case FShl:
-    fn = [](auto a, auto b, auto c) -> StateValue {
-      return { expr::fshl(a, b, c), true };
-    };
+    fn = expr::fshl;
     break;
-
   case FShr:
-    fn = [](auto a, auto b, auto c) -> StateValue {
-      return { expr::fshr(a, b, c), true };
-    };
-    break;
-
-  case FMA:
-    fn = [&](auto a, auto b, auto c) -> StateValue {
-      return fm_poison(s, a, true, b, true, c, [](expr &a, expr &b, expr &c) {
-                                   return expr::fma(a, b, c); }, fmath, false);
-    };
+    fn = expr::fshr;
     break;
   }
+
+  auto scalar = [&](const auto &a, const auto &b, const auto &c) -> StateValue {
+    return { fn(a.value, b.value, c.value),
+             a.non_poison && b.non_poison && c.non_poison };
+  };
 
   if (getType().isVectorType()) {
     vector<StateValue> vals;
     auto ty = getType().getAsAggregateType();
 
     for (unsigned i = 0, e = ty->numElementsConst(); i != e; ++i) {
-      auto ai = ty->extract(av, i);
-      auto bi = ty->extract(bv, i);
-      auto ci = ty->extract(cv, i);
-      auto [v, np] = fn(ai.value, bi.value, ci.value);
-      vals.emplace_back(move(v), ai.non_poison && bi.non_poison &&
-                                 ci.non_poison && np);
+      vals.emplace_back(scalar(ty->extract(av, i), ty->extract(bv, i),
+                               ty->extract(cv, i)));
     }
     return ty->aggregateVals(vals);
   }
-  auto [v, np] = fn(av.value, bv.value, cv.value);
-  return { move(v), av.non_poison && bv.non_poison && cv.non_poison && np };
+  return scalar(av, bv, cv);
 }
 
 expr TernaryOp::getTypeConstraints(const Function &f) const {
-  expr instrconstr = Value::getTypeConstraints() &&
-                     getType() == a->getType() &&
-                     getType() == b->getType() &&
-                     getType() == c->getType();
-  switch(op) {
-    case FShl:
-    case FShr:
-      instrconstr &= getType().enforceIntOrVectorType();
-      break;
-    case FMA:
-      instrconstr &= getType().enforceFloatOrVectorType();
-      break;
-  }
-  return instrconstr;
+  return Value::getTypeConstraints() &&
+         getType() == a->getType() &&
+         getType() == b->getType() &&
+         getType() == c->getType() &&
+         getType().enforceIntOrVectorType();
 }
 
 unique_ptr<Instr> TernaryOp::dup(const string &suffix) const {
   return make_unique<TernaryOp>(getType(), getName() + suffix, *a, *b, *c, op);
 }
 
-util::ConcreteVal * TernaryOp::concreteEval(std::map<const Value *, util::ConcreteVal *> &concrete_vals) const{
-  
-  auto v_op = operands();  
-  for (auto operand: v_op){
-      auto I = concrete_vals.find(operand);
-      if (I == concrete_vals.end()){
-        cout << "ERROR : [TernaryOp::concreteEval] concrete values for operand not found. Aborting!" << '\n';
-        exit(EXIT_FAILURE);
-      }
+std::shared_ptr<util::ConcreteVal>
+TernaryOp::concreteEval(Interpreter &interpreter) const {
+  auto v_op = operands();
+  for (auto operand : v_op) {
+    auto I = interpreter.concrete_vals.find(operand);
+    if (I == interpreter.concrete_vals.end()) {
+      cout << "ERROR : [TernaryOp::concreteEval] concrete values for operand "
+              "not found. Aborting!"
+           << '\n';
+      assert(false);
+    }
   }
-  
-  auto op_a_concrete = concrete_vals.find(a)->second;
-  auto op_b_concrete = concrete_vals.find(b)->second;
-  auto op_c_concrete = concrete_vals.find(c)->second;
 
-  if (op == Op::FMA){
-    auto v = ConcreteValFloat::fma(op_a_concrete, op_b_concrete, op_c_concrete);
-    // CHECK Should we check the opStatus from the fusedMultipyAdd?
-    return v;
+  auto op_a_concrete = interpreter.concrete_vals.find(a)->second.get();
+  auto op_b_concrete = interpreter.concrete_vals.find(b)->second.get();
+  auto op_c_concrete = interpreter.concrete_vals.find(c)->second.get();
+
+  if (op == Op::FShl) {
+    return shared_ptr<ConcreteVal>(
+        ConcreteValInt::fshl(op_a_concrete, op_b_concrete, op_c_concrete));
+  } else if (op == Op::FShr) {
+    return shared_ptr<ConcreteVal>(
+        ConcreteValInt::fshr(op_a_concrete, op_b_concrete, op_c_concrete));
+  } else {
+    interpreter.setUnsupported(getOpcodeName());
+    return nullptr;
   }
-  else {
-    cout << "ERROR : [TernaryOp::concreteEval] operation not supported yet. Aborting!" << '\n';
-    exit(EXIT_FAILURE);
+
+  UNREACHABLE();
+}
+
+vector<Value*> FpTernaryOp::operands() const {
+  return { a, b, c };
+}
+
+bool FpTernaryOp::propagatesPoison() const {
+  return true;
+}
+
+void FpTernaryOp::rauw(const Value &what, Value &with) {
+  RAUW(a);
+  RAUW(b);
+  RAUW(c);
+}
+
+void FpTernaryOp::print(ostream &os) const {
+  const char *str = nullptr;
+  switch (op) {
+  case FMA:    str = "fma "; break;
+  case MulAdd: str = "fmuladd "; break;
+  }
+
+  os << getName() << " = " << str << fmath << *a << ", " << *b << ", " << *c;
+  if (!rm.isDefault())
+    os << ", rounding=" << rm;
+  os << ", exceptions=" << ex;
+}
+
+StateValue FpTernaryOp::toSMT(State &s) const {
+  auto &av = s[*a];
+  auto &bv = s[*b];
+  auto &cv = s[*c];
+  function<StateValue(const StateValue&, const StateValue&, const StateValue&,
+                      FpRoundingMode)> fn;
+
+  switch (op) {
+  case FMA:
+    fn = [&](auto &a, auto &b, auto &c, auto rm) -> StateValue {
+      return fm_poison(s, a.value, a.non_poison, b.value, b.non_poison, c.value,
+                       c.non_poison, [&](expr &a, expr &b, expr &c) {
+                         return expr::fma(a, b, c, rm.toSMT());
+                       }, fmath, false);
+    };
+    break;
+  case MulAdd:
+    fn = [&](auto &a, auto &b, auto &c, auto rm0) -> StateValue {
+      auto rm = rm0.toSMT();
+      expr var = expr::mkFreshVar("nondet", expr(false));
+      s.addQuantVar(var);
+      return fm_poison(s, a.value, a.non_poison, b.value, b.non_poison, c.value,
+                       c.non_poison, [&](expr &a, expr &b, expr &c) {
+                         return expr::mkIf(var, expr::fma(a, b, c, rm),
+                                           a.fmul(b, rm).fadd(c, rm));
+                       }, fmath, false);
+    };
+    break;
+  }
+
+  auto scalar = [&](const StateValue &a, const StateValue &b,
+                    const StateValue &c) {
+    return round_value([&](auto rm) { return fn(a, b, c, rm); }, s, rm);
+  };
+
+  if (getType().isVectorType()) {
+    vector<StateValue> vals;
+    auto ty = getType().getAsAggregateType();
+
+    for (unsigned i = 0, e = ty->numElementsConst(); i != e; ++i) {
+      vals.emplace_back(scalar(ty->extract(av, i), ty->extract(bv, i),
+                               ty->extract(cv, i)));
+    }
+    return ty->aggregateVals(vals);
+  }
+  return scalar(av, bv, cv);
+}
+
+expr FpTernaryOp::getTypeConstraints(const Function &f) const {
+  return Value::getTypeConstraints() &&
+         getType() == a->getType() &&
+         getType() == b->getType() &&
+         getType() == c->getType() &&
+         getType().enforceFloatOrVectorType();
+}
+
+unique_ptr<Instr> FpTernaryOp::dup(const string &suffix) const {
+  return make_unique<FpTernaryOp>(getType(), getName() + suffix, *a, *b, *c, op,
+                                  fmath, rm);
+}
+
+std::shared_ptr<util::ConcreteVal>
+FpTernaryOp::concreteEval(Interpreter &interpreter) const {
+  auto v_op = operands();
+  for (auto operand : v_op) {
+    auto I = interpreter.concrete_vals.find(operand);
+    if (I == interpreter.concrete_vals.end()) {
+      cout << "ERROR : [TernaryOp::concreteEval] concrete values for operand "
+              "not found. Aborting!"
+           << '\n';
+      assert(false);
+    }
+  }
+
+  auto op_a_concrete = interpreter.concrete_vals.find(a)->second.get();
+  auto op_b_concrete = interpreter.concrete_vals.find(b)->second.get();
+  auto op_c_concrete = interpreter.concrete_vals.find(c)->second.get();
+
+  if (op == Op::FMA) {
+    // CHECK Should we check the opStatus from the fusedMultipyAdd?
+    return shared_ptr<ConcreteVal>(
+        ConcreteValFloat::fma(op_a_concrete, op_b_concrete, op_c_concrete));
+  } else {
+    interpreter.setUnsupported(getOpcodeName());
+    return nullptr;
   }
 
   UNREACHABLE();
@@ -1449,12 +1633,6 @@ void ConversionOp::print(ostream &os) const {
   case ZExt:     str = "zext "; break;
   case Trunc:    str = "trunc "; break;
   case BitCast:  str = "bitcast "; break;
-  case SIntToFP: str = "sitofp "; break;
-  case UIntToFP: str = "uitofp "; break;
-  case FPToSInt: str = "fptosi "; break;
-  case FPToUInt: str = "fptoui "; break;
-  case FPExt:    str = "fpext "; break;
-  case FPTrunc:  str = "fptrunc "; break;
   case Ptr2Int:  str = "ptrtoint "; break;
   case Int2Ptr:  str = "int2ptr "; break;
   }
@@ -1464,76 +1642,40 @@ void ConversionOp::print(ostream &os) const {
 
 StateValue ConversionOp::toSMT(State &s) const {
   auto v = s[*val];
-  function<StateValue(expr &&, const Type &)> fn;
+  function<expr(expr &&, const Type &)> fn;
 
   switch (op) {
   case SExt:
-    fn = [](auto &&val, auto &to_type) -> StateValue {
-      return { val.sext(to_type.bits() - val.bits()), true };
+    fn = [](auto &&val, auto &to_type) -> expr {
+      return val.sext(to_type.bits() - val.bits());
     };
     break;
   case ZExt:
-    fn = [](auto &&val, auto &to_type) -> StateValue {
-      return { val.zext(to_type.bits() - val.bits()), true };
+    fn = [](auto &&val, auto &to_type) -> expr {
+      return val.zext(to_type.bits() - val.bits());
     };
     break;
   case Trunc:
-    fn = [](auto &&val, auto &to_type) -> StateValue {
-      return { val.trunc(to_type.bits()), true };
+    fn = [](auto &&val, auto &to_type) -> expr {
+      return val.trunc(to_type.bits());
     };
     break;
   case BitCast:
-    fn = [](auto &&val, auto &to_type) -> StateValue {
-      return { to_type.fromInt(move(val)), true };
-    };
-    break;
-  case SIntToFP:
-    fn = [](auto &&val, auto &to_type) -> StateValue {
-      return { val.sint2fp(to_type.getDummyValue(false).value), true };
-    };
-    break;
-  case UIntToFP:
-    fn = [](auto &&val, auto &to_type) -> StateValue {
-      return { val.uint2fp(to_type.getDummyValue(false).value), true };
-    };
-    break;
-  case FPToSInt:
-    fn = [](auto &&val, auto &to_type) -> StateValue {
-      expr bv  = val.fp2sint(to_type.bits());
-      expr fp2 = bv.sint2fp(val);
-      // -0.0 is converted to 0 and then to 0.0, though -0.0 is ok to convert
-      return { move(bv), val.isFPZero() || fp2 == val.roundtz() };
-    };
-    break;
-  case FPToUInt:
-    fn = [](auto &&val, auto &to_type) -> StateValue {
-      expr bv  = val.fp2uint(to_type.bits());
-      expr fp2 = bv.uint2fp(val);
-      return { move(bv), fp2 == val.roundtz() };
-    };
-    break;
-  case FPExt:
-  case FPTrunc:
-    fn = [](auto &&val, auto &to_type) -> StateValue {
-      return { val.float2Float(to_type.getDummyValue(false).value), true };
+    fn = [](auto &&val, auto &to_type) -> expr {
+      return to_type.fromInt(std::move(val));
     };
     break;
   case Ptr2Int:
-    fn = [&](auto &&val, auto &to_type) -> StateValue {
-      return { s.getMemory().ptr2int(val).zextOrTrunc(to_type.bits()), true };
+    fn = [&](auto &&val, auto &to_type) -> expr {
+      return s.getMemory().ptr2int(val).zextOrTrunc(to_type.bits());
     };
     break;
   case Int2Ptr:
-    fn = [&](auto &&val, auto &to_type) -> StateValue {
-      return { s.getMemory().int2ptr(val), true };
+    fn = [&](auto &&val, auto &to_type) -> expr {
+      return s.getMemory().int2ptr(val);
     };
     break;
   }
-
-  auto scalar = [&](StateValue &&sv, const Type &to_type) -> StateValue {
-    auto [v, np] = fn(move(sv.value), to_type);
-    return { move(v), sv.non_poison && np };
-  };
 
   if (op == BitCast) {
     // NOP: ptr vect -> ptr vect
@@ -1541,7 +1683,7 @@ StateValue ConversionOp::toSMT(State &s) const {
         getType().getAsAggregateType()->getChild(0).isPtrType())
       return v;
 
-    v = val->getType().toInt(s, move(v));
+    v = val->getType().toInt(s, std::move(v));
   }
 
   if (getType().isVectorType()) {
@@ -1557,7 +1699,9 @@ StateValue ConversionOp::toSMT(State &s) const {
 
     for (unsigned i = 0; i != elems; ++i) {
       unsigned idx = (little_endian && op == BitCast) ? elems - i - 1 : i;
-      vals.emplace_back(scalar(valty->extract(v, idx), retty->getChild(idx)));
+      auto vi = valty->extract(v, idx);
+      vals.emplace_back(fn(std::move(vi.value), retty->getChild(idx)),
+                        std::move(vi.non_poison));
     }
     return retty->aggregateVals(vals);
   }
@@ -1566,7 +1710,7 @@ StateValue ConversionOp::toSMT(State &s) const {
   if (op == BitCast)
     v.non_poison = v.non_poison == expr::mkInt(-1, v.non_poison);
 
-  return scalar(move(v), getType());
+  return { fn(std::move(v.value), getType()), std::move(v.non_poison) };
 }
 
 expr ConversionOp::getTypeConstraints(const Function &f) const {
@@ -1590,26 +1734,6 @@ expr ConversionOp::getTypeConstraints(const Function &f) const {
           val->getType().enforcePtrOrVectorType() &&
         getType().sizeVar() == val->getType().sizeVar();
     break;
-  case SIntToFP:
-  case UIntToFP:
-    c = getType().enforceFloatOrVectorType() &&
-        val->getType().enforceIntOrVectorType();
-    break;
-  case FPToSInt:
-  case FPToUInt:
-    c = getType().enforceIntOrVectorType() &&
-        val->getType().enforceFloatOrVectorType();
-    break;
-  case FPExt:
-    c = getType().enforceFloatOrVectorType() &&
-        val->getType().enforceFloatOrVectorType() &&
-        val->getType().scalarSize().ult(getType().scalarSize());
-    break;
-  case FPTrunc:
-    c = getType().enforceFloatOrVectorType() &&
-        val->getType().enforceFloatOrVectorType() &&
-        val->getType().scalarSize().ugt(getType().scalarSize());
-    break;
   case Ptr2Int:
     c = getType().enforceIntOrVectorType() &&
         val->getType().enforcePtrOrVectorType();
@@ -1630,30 +1754,184 @@ unique_ptr<Instr> ConversionOp::dup(const string &suffix) const {
   return make_unique<ConversionOp>(getType(), getName() + suffix, *val, op);
 }
 
-util::ConcreteVal * ConversionOp::concreteEval(std::map<const Value *, util::ConcreteVal *> &concrete_vals) const{
-  auto I = concrete_vals.find(val);
-  if (I == concrete_vals.end()){
-    cout << "ERROR: [ConversionOp::concreteEval] concrete value for operand not found. Aborting" << '\n';
-    exit(EXIT_FAILURE);
+
+vector<Value*> FpConversionOp::operands() const {
+  return { val };
+}
+
+bool FpConversionOp::propagatesPoison() const {
+  return true;
+}
+
+void FpConversionOp::rauw(const Value &what, Value &with) {
+  RAUW(val);
+}
+
+void FpConversionOp::print(ostream &os) const {
+  const char *str = nullptr;
+  switch (op) {
+  case SIntToFP: str = "sitofp "; break;
+  case UIntToFP: str = "uitofp "; break;
+  case FPToSInt: str = "fptosi "; break;
+  case FPToUInt: str = "fptoui "; break;
+  case FPExt:    str = "fpext "; break;
+  case FPTrunc:  str = "fptrunc "; break;
+  case LRInt:    str = "lrint "; break;
+  case LRound:   str = "lround "; break;
   }
 
-  auto op_concrete = I->second;
+  os << getName() << " = " << str << *val << print_type(getType(), " to ", "");
+  if (!rm.isDefault())
+    os << ", rounding=" << rm;
+  os << ", exceptions=" << ex;
+}
+
+StateValue FpConversionOp::toSMT(State &s) const {
+  auto &v = s[*val];
+  function<StateValue(const expr &, const Type &, FpRoundingMode)> fn;
+
+  switch (op) {
+  case SIntToFP:
+    fn = [](auto &val, auto &to_type, auto rm) -> StateValue {
+      return
+        { val.sint2fp(to_type.getDummyValue(false).value, rm.toSMT()), true };
+    };
+    break;
+  case UIntToFP:
+    fn = [](auto &val, auto &to_type, auto rm) -> StateValue {
+      return
+        { val.uint2fp(to_type.getDummyValue(false).value, rm.toSMT()), true };
+    };
+    break;
+  case FPToSInt:
+  case LRInt:
+  case LRound:
+    fn = [&](auto &val, auto &to_type, auto rm_in) -> StateValue {
+      expr rm;
+      switch (op) {
+      case FPToSInt:
+        rm = expr::rtz();
+        break;
+      case LRInt:
+        rm = rm_in.toSMT();
+        break;
+      case LRound:
+        rm = expr::rna();
+        break;
+      default: UNREACHABLE();
+      }
+      expr bv  = val.fp2sint(to_type.bits(), rm);
+      expr fp2 = bv.sint2fp(val, rm);
+      // -0.xx is converted to 0 and then to 0.0, though -0.xx is ok to convert
+      expr val_rounded = val.round(rm);
+      return { std::move(bv), val_rounded.isFPZero() || fp2 == val_rounded };
+    };
+    break;
+  case FPToUInt:
+    fn = [](auto &val, auto &to_type, auto rm_) -> StateValue {
+      expr rm = expr::rtz();
+      expr bv  = val.fp2uint(to_type.bits(), rm);
+      expr fp2 = bv.uint2fp(val, rm);
+      // -0.xx must be converted to 0, not poison.
+      expr val_rounded = val.round(rm);
+      return { std::move(bv), val_rounded.isFPZero() || fp2 == val_rounded };
+    };
+    break;
+  case FPExt:
+  case FPTrunc:
+    fn = [](auto &val, auto &to_type, auto rm) -> StateValue {
+      return { val.float2Float(to_type.getDummyValue(false).value, rm.toSMT()),
+               true };
+    };
+    break;
+  }
+
+  auto scalar = [&](const StateValue &sv, const Type &to_type) -> StateValue {
+    auto [v, np]
+      = round_value([&](auto rm) { return fn(sv.value, to_type, rm); }, s, rm);
+    return { std::move(v), sv.non_poison && np };
+  };
+
+  if (getType().isVectorType()) {
+    vector<StateValue> vals;
+    auto ty = val->getType().getAsAggregateType();
+    auto retty = getType().getAsAggregateType();
+
+    for (unsigned i = 0, e = ty->numElementsConst(); i != e; ++i) {
+      vals.emplace_back(scalar(ty->extract(v, i), retty->getChild(i)));
+    }
+    return retty->aggregateVals(vals);
+  }
+  return scalar(v, getType());
+}
+
+expr FpConversionOp::getTypeConstraints(const Function &f) const {
+  expr c;
+  switch (op) {
+  case SIntToFP:
+  case UIntToFP:
+    c = getType().enforceFloatOrVectorType() &&
+        val->getType().enforceIntOrVectorType();
+    break;
+  case FPToSInt:
+  case FPToUInt:
+  case LRInt:
+  case LRound:
+    c = getType().enforceIntOrVectorType() &&
+        val->getType().enforceFloatOrVectorType();
+    break;
+  case FPExt:
+    c = getType().enforceFloatOrVectorType() &&
+        val->getType().enforceFloatOrVectorType() &&
+        val->getType().scalarSize().ult(getType().scalarSize());
+    break;
+  case FPTrunc:
+    c = getType().enforceFloatOrVectorType() &&
+        val->getType().enforceFloatOrVectorType() &&
+        val->getType().scalarSize().ugt(getType().scalarSize());
+    break;
+  }
+  return Value::getTypeConstraints() && c;
+}
+
+unique_ptr<Instr> FpConversionOp::dup(const string &suffix) const {
+  return
+    make_unique<FpConversionOp>(getType(), getName() + suffix, *val, op, rm);
+}
+
+std::shared_ptr<util::ConcreteVal>
+ConversionOp::concreteEval(Interpreter &interpreter) const {
+  auto I = interpreter.concrete_vals.find(val);
+  if (I == interpreter.concrete_vals.end()) {
+    cout << "ERROR: [ConversionOp::concreteEval] concrete value for operand not found. Aborting" << '\n';
+    assert(false);
+  }
+
+  auto op_concrete = I->second.get();
   auto tgt_bitwidth = getType().bits();
+
+  if (dynamic_cast<ConcreteValAggregate *>(op_concrete)) {
+    interpreter.setUnsupported("vector operand to conversion operator");
+    return nullptr;
+  }
+
   if (op == Op::Trunc) {
-    auto v = ConcreteValInt::iTrunc(op_concrete, tgt_bitwidth);
-    return v;
-  }
-  else if (op == Op::ZExt) {
-    auto v = ConcreteValInt::zext(op_concrete, tgt_bitwidth);
-    return v;
-  }
-  else if (op == Op::SExt) {
-    auto v = ConcreteValInt::sext(op_concrete, tgt_bitwidth);
-    return v;
-  }
-  else {
-    cout << "ERROR : [ConversionOp::concreteEval] operation not supported yet. Aborting!" << '\n';
-    exit(EXIT_FAILURE);
+    return shared_ptr<ConcreteVal>(
+        ConcreteValInt::iTrunc(op_concrete, tgt_bitwidth));
+  } else if (op == Op::ZExt) {
+    return shared_ptr<ConcreteVal>(
+        ConcreteValInt::zext(op_concrete, tgt_bitwidth));
+  } else if (op == Op::SExt) {
+    return shared_ptr<ConcreteVal>(
+        ConcreteValInt::sext(op_concrete, tgt_bitwidth));
+  } else if (op == Op::BitCast) {
+    if (getType().isPtrType() && val->getType().isPtrType())
+      return I->second;
+    interpreter.setUnsupported("bitcast on non-pointers");
+    return nullptr;
+  } else {
+    interpreter.setUnsupported(getOpcodeName());
+    return nullptr;
   }
   UNREACHABLE();
 }
@@ -1713,35 +1991,19 @@ unique_ptr<Instr> Select::dup(const string &suffix) const {
   return make_unique<Select>(getType(), getName() + suffix, *cond, *a, *b);
 }
 
-util::ConcreteVal * Select::concreteEval(std::map<const Value *, util::ConcreteVal *> &concrete_vals) const {
-
-  auto a_I = concrete_vals.find(a);
-  assert(a_I != concrete_vals.end());
-  auto& concrete_a = a_I->second;
-  auto b_I = concrete_vals.find(b);
-  assert(b_I != concrete_vals.end());
-  auto& concrete_b = b_I->second;
-  auto cond_I = concrete_vals.find(cond);
-  assert(cond_I != concrete_vals.end());
-  auto& concrete_cond = cond_I->second;
-  
-  // TODO need to change concreteVal's design to scale
-  if (dynamic_cast<ConcreteValInt *>(concrete_a)) {
-    auto v = ConcreteValInt::select(concrete_cond, concrete_a, concrete_b);
-    return v;
-  }
-  else if (dynamic_cast<ConcreteValFloat *>(concrete_a)) {
-    auto v = ConcreteValFloat::select(concrete_cond, concrete_a, concrete_b);
-    return v;
-  }
-  else {
-    cout << "ERROR : [Select::concreteEval] select instruction on this type not supported yet. Aborting!" << '\n';
-    exit(EXIT_FAILURE);
-  }
-    
-  UNREACHABLE();  
+std::shared_ptr<util::ConcreteVal>
+Select::concreteEval(Interpreter &interpreter) const {
+  auto a_I = interpreter.concrete_vals.find(a);
+  assert(a_I != interpreter.concrete_vals.end());
+  auto &concrete_a = a_I->second;
+  auto b_I = interpreter.concrete_vals.find(b);
+  assert(b_I != interpreter.concrete_vals.end());
+  auto &concrete_b = b_I->second;
+  auto cond_I = interpreter.concrete_vals.find(cond);
+  assert(cond_I != interpreter.concrete_vals.end());
+  auto concrete_cond = cond_I->second.get();
+  return ConcreteValInt::select(concrete_cond, concrete_a, concrete_b);
 }
-
 
 void ExtractValue::addIdx(unsigned idx) {
   idxs.emplace_back(idx);
@@ -1803,6 +2065,16 @@ unique_ptr<Instr> ExtractValue::dup(const string &suffix) const {
   return ret;
 }
 
+shared_ptr<ConcreteVal>
+ExtractValue::concreteEval(Interpreter &interpreter) const {
+  shared_ptr<ConcreteVal> v = interpreter.concrete_vals[val];
+  for (unsigned idx : idxs) {
+    auto &agg = static_cast<ConcreteValAggregate &>(*v).getVal();
+    assert(idx < agg.size());
+    v = agg[idx];
+  }
+  return v;
+}
 
 void InsertValue::addIdx(unsigned idx) {
   idxs.emplace_back(idx);
@@ -1842,7 +2114,7 @@ static StateValue update_repack(Type *type,
                         elem :
                         update_repack(&ty->getChild(i), v, elem, indices));
     } else {
-      vals.emplace_back(move(v));
+      vals.emplace_back(std::move(v));
     }
   }
 
@@ -1886,6 +2158,26 @@ unique_ptr<Instr> InsertValue::dup(const string &suffix) const {
     ret->addIdx(idx);
   }
   return ret;
+}
+
+static shared_ptr<ConcreteVal> InsertValueImpl(ConcreteVal *val,
+                                               shared_ptr<ConcreteVal> &elt,
+                                               const vector<unsigned> &idxs,
+                                               unsigned i) {
+  if (i >= idxs.size())
+    return elt;
+  vector<shared_ptr<ConcreteVal>> elements =
+      static_cast<ConcreteValAggregate &>(*val).getVal();
+  assert(idxs[i] < elements.size());
+  elements[idxs[i]] =
+      InsertValueImpl(elements[idxs[i]].get(), elt, idxs, i + 1);
+  return make_shared<ConcreteValAggregate>(false, move(elements));
+}
+
+shared_ptr<ConcreteVal>
+InsertValue::concreteEval(Interpreter &interpreter) const {
+  return InsertValueImpl(interpreter.concrete_vals[val].get(),
+                         interpreter.concrete_vals[elt], idxs, 0);
 }
 
 DEFINE_AS_RETZEROALIGN(FnCall, getMaxAllocSize);
@@ -1954,7 +2246,7 @@ FnCall::ByteAccessInfo FnCall::getByteAccessInfo() const {
 
 
 void FnCall::addArg(Value &arg, ParamAttrs &&attrs) {
-  args.emplace_back(&arg, move(attrs));
+  args.emplace_back(&arg, std::move(attrs));
 }
 
 vector<Value*> FnCall::operands() const {
@@ -1987,33 +2279,68 @@ void FnCall::print(ostream &os) const {
   os << ')' << attrs;
 }
 
+static void eq_bids(OrExpr &acc, Memory &m, const Type &t,
+                    const StateValue &val, const expr &bid) {
+  if (auto agg = t.getAsAggregateType()) {
+    for (unsigned i = 0, e = agg->numElementsConst(); i != e; ++i) {
+      eq_bids(acc, m, agg->getChild(i), agg->extract(val, i), bid);
+    }
+    return;
+  }
+
+  if (t.isPtrType()) {
+    acc.add(val.non_poison && Pointer(m, val.value).getBid() == bid);
+  }
+}
+
+static expr ptr_only_args(State &s, const Pointer &p) {
+  expr bid = p.getBid();
+  auto &m  = s.getMemory();
+
+  OrExpr e;
+  for (auto &in : s.getFn().getInputs()) {
+    if (hasPtr(in.getType()))
+      eq_bids(e, m, in.getType(), s[in], bid);
+  }
+  return e();
+}
+
 static void unpack_inputs(State &s, Value &argv, Type &ty,
-                          const ParamAttrs &argflag, StateValue value,
-                          StateValue value2, vector<StateValue> &inputs,
+                          const ParamAttrs &argflag, bool argmemonly,
+                          StateValue value, StateValue value2,
+                          vector<StateValue> &inputs,
                           vector<Memory::PtrInput> &ptr_inputs) {
   if (auto agg = ty.getAsAggregateType()) {
     for (unsigned i = 0, e = agg->numElementsConst(); i != e; ++i) {
-      unpack_inputs(s, argv, agg->getChild(i), argflag, agg->extract(value, i),
-                    agg->extract(value2, i), inputs, ptr_inputs);
+      unpack_inputs(s, argv, agg->getChild(i), argflag, argmemonly,
+                    agg->extract(value, i), agg->extract(value2, i), inputs,
+                    ptr_inputs);
     }
     return;
   }
 
   auto unpack = [&](StateValue &&value) {
     auto [UB, new_non_poison] = argflag.encode(s, value, ty);
-    s.addUB(move(UB));
-    value.non_poison = move(new_non_poison);
+    s.addUB(std::move(UB));
+    value.non_poison = std::move(new_non_poison);
 
     if (ty.isPtrType()) {
-      ptr_inputs.emplace_back(move(value),
+      // FIXME: This is definitely incorrect. If the *callee* has argmemonly,
+      // this checks whether the argument is one of the *caller's* arguments.
+      // https://github.com/AliveToolkit/alive2/issues/763
+      if (argmemonly)
+        value.non_poison
+          &= ptr_only_args(s, Pointer(s.getMemory(), value.value));
+
+      ptr_inputs.emplace_back(std::move(value),
                               argflag.blockSize,
                               argflag.has(ParamAttrs::NoCapture));
     } else {
-      inputs.emplace_back(move(value));
+      inputs.emplace_back(std::move(value));
     }
   };
-  unpack(move(value));
-  unpack(move(value2));
+  unpack(std::move(value));
+  unpack(std::move(value2));
 }
 
 static void unpack_ret_ty (vector<Type*> &out_types, Type &ty) {
@@ -2039,8 +2366,8 @@ check_return_value(State &s, StateValue &&val, const Type &ty,
   }
 
   auto [UB, new_non_poison] = attrs.encode(s, val, ty);
-  s.addUB(move(UB));
-  return { move(val.value), move(new_non_poison) };
+  s.addUB(std::move(UB));
+  return { std::move(val.value), std::move(new_non_poison) };
 }
 
 static StateValue
@@ -2055,7 +2382,7 @@ pack_return(State &s, Type &ty, vector<StateValue> &vals, const FnAttrs &attrs,
     return agg->aggregateVals(vs);
   }
 
-  return check_return_value(s, move(vals[idx++]), ty, attrs, false);
+  return check_return_value(s, std::move(vals[idx++]), ty, attrs, false);
 }
 
 StateValue FnCall::toSMT(State &s) const {
@@ -2065,6 +2392,9 @@ StateValue FnCall::toSMT(State &s) const {
   vector<StateValue> inputs;
   vector<Memory::PtrInput> ptr_inputs;
   vector<Type*> out_types;
+
+  bool argmemonly_fn   = s.getFn().getFnAttrs().has(FnAttrs::ArgMemOnly);
+  bool argmemonly_call = hasAttribute(FnAttrs::ArgMemOnly);
 
   ostringstream fnName_mangled;
   fnName_mangled << fnName;
@@ -2083,20 +2413,28 @@ StateValue FnCall::toSMT(State &s) const {
       sv2 = s[*arg];
     }
 
-    unpack_inputs(s, *arg, arg->getType(), flags, move(sv), move(sv2), inputs,
-                  ptr_inputs);
+    unpack_inputs(s, *arg, arg->getType(), flags, argmemonly_fn, std::move(sv),
+                  std::move(sv2), inputs, ptr_inputs);
     fnName_mangled << '#' << arg->getType();
   }
   fnName_mangled << '!' << getType();
   if (!isVoid())
     unpack_ret_ty(out_types, getType());
 
-  auto check_access = [&]() {
-    if (attrs.has(FnAttrs::ArgMemOnly)) {
+  auto check = [&](FnAttrs::Attribute attr) {
+    return s.getFn().getFnAttrs().has(attr) && !hasAttribute(attr);
+  };
+
+  auto check_implies = [&](FnAttrs::Attribute attr) {
+    if (!check(attr))
+      return;
+
+    if (argmemonly_call) {
       for (auto &p : ptr_inputs) {
         if (!p.byval) {
           Pointer ptr(s.getMemory(), p.val.value);
-          s.addUB(p.val.non_poison.implies(ptr.isLocal()));
+          s.addUB(p.val.non_poison.implies(
+                    ptr.isLocal() || ptr.isConstGlobal()));
         }
       }
     } else {
@@ -2104,30 +2442,25 @@ StateValue FnCall::toSMT(State &s) const {
     }
   };
 
-  if (!attrs.has(FnAttrs::NoRead)) {
-    if (s.getFn().getFnAttrs().has(FnAttrs::NoRead))
-      check_access();
-  }
+  check_implies(FnAttrs::NoRead);
+  check_implies(FnAttrs::NoWrite);
+  check_implies(FnAttrs::NoFree);
 
-  if (!attrs.has(FnAttrs::NoWrite)) {
-    if (s.getFn().getFnAttrs().has(FnAttrs::NoWrite))
-      check_access();
-  }
-
-  unsigned idx = 0;
-  auto ret = s.addFnCall(fnName_mangled.str(), move(inputs), move(ptr_inputs),
-                         out_types, attrs);
-
-  // Caller has nofree attribute, so callee must have it as well
-  if (s.getFn().getFnAttrs().has(FnAttrs::NoFree) &&
-      !attrs.has(FnAttrs::NoFree))
+  // Check attributes that calles must have if caller has them
+  if (check(FnAttrs::ArgMemOnly) ||
+      check(FnAttrs::NoThrow) ||
+      check(FnAttrs::WillReturn) ||
+      check(FnAttrs::InaccessibleMemOnly))
     s.addUB(expr(false));
 
-  if (attrs.has(FnAttrs::NoReturn)) {
-    // TODO: Even if a function call doesn't have noreturn, it can possibly
-    // exit. Relevant bug: https://bugs.llvm.org/show_bug.cgi?id=27953
-    s.addNoReturn();
-  }
+  // can't have both!
+  if (attrs.has(FnAttrs::ArgMemOnly) && attrs.has(FnAttrs::InaccessibleMemOnly))
+    s.addUB(expr(false));
+
+  unsigned idx = 0;
+  auto ret = s.addFnCall(fnName_mangled.str(), std::move(inputs), std::move(ptr_inputs),
+                         out_types, attrs);
+
   return isVoid() ? StateValue() : pack_return(s, getType(), ret, attrs, idx);
 }
 
@@ -2145,8 +2478,14 @@ unique_ptr<Instr> FnCall::dup(const string &suffix) const {
 }
 
 
+InlineAsm::InlineAsm(Type &type, string &&name, const string &asm_str,
+                     const string &constraints, FnAttrs &&attrs)
+  : FnCall(type, std::move(name), "asm " + asm_str + ", " + constraints,
+           std::move(attrs)) {}
+
+
 ICmp::ICmp(Type &type, string &&name, Cond cond, Value &a, Value &b)
-  : Instr(type, move(name)), a(&a), b(&b), cond(cond), defined(cond != Any) {
+  : Instr(type, std::move(name)), a(&a), b(&b), cond(cond), defined(cond != Any) {
   if (!defined)
     cond_name = getName() + "_cond";
 }
@@ -2209,7 +2548,7 @@ static expr build_icmp_chain(const expr &var,
     return build_icmp_chain(var, fn, cond, fn(cond));
 
   auto e = expr::mkIf(var == cond, fn(cond), last);
-  return cond == 0 ? e : build_icmp_chain(var, fn, cond, move(e));
+  return cond == 0 ? e : build_icmp_chain(var, fn, cond, std::move(e));
 }
 
 StateValue ICmp::toSMT(State &s) const {
@@ -2282,18 +2621,30 @@ unique_ptr<Instr> ICmp::dup(const string &suffix) const {
   return make_unique<ICmp>(getType(), getName() + suffix, cond, *a, *b);
 }
 
-util::ConcreteVal * ICmp::concreteEval(std::map<const Value *, util::ConcreteVal *> &concrete_vals) const{
-  auto a_I = concrete_vals.find(a);
-  assert(a_I != concrete_vals.end());
-  auto& concrete_a = a_I->second;
-  auto b_I = concrete_vals.find(b);
-  assert(b_I != concrete_vals.end());
-  auto& concrete_b = b_I->second;
-  
-  auto v = ConcreteValInt::icmp(concrete_a, concrete_b, cond);
-  return v;
-}
+std::shared_ptr<util::ConcreteVal>
+ICmp::concreteEval(Interpreter &interpreter) const {
+  auto a_I = interpreter.concrete_vals.find(a);
+  assert(a_I != interpreter.concrete_vals.end());
+  auto concrete_a = a_I->second.get();
+  auto b_I = interpreter.concrete_vals.find(b);
+  assert(b_I != interpreter.concrete_vals.end());
+  auto concrete_b = b_I->second.get();
 
+  if (a->getType().isPtrType()) {
+    return shared_ptr<ConcreteVal>(ConcreteValPointer::icmp(
+        concrete_a, concrete_b, cond, pcmode, interpreter));
+  } else if (a->getType().isVectorType()) {
+    return shared_ptr<ConcreteVal>(ConcreteValAggregate::icmp(
+        concrete_a, concrete_b, cond, pcmode, interpreter));
+  } else if (a->getType().isIntType()) {
+    return shared_ptr<ConcreteVal>(
+        ConcreteValInt::icmp(concrete_a, concrete_b, cond));
+  }
+  else {
+    interpreter.setUnsupported("icmp type not supported");
+    return nullptr;
+  }
+}
 
 vector<Value*> FCmp::operands() const {
   return { a, b };
@@ -2321,6 +2672,8 @@ void FCmp::print(ostream &os) const {
   case ULE:   condtxt = "ule "; break;
   case UNE:   condtxt = "une "; break;
   case UNO:   condtxt = "uno "; break;
+  case TRUE:  condtxt = "true "; break;
+  case FALSE: condtxt = "false "; break;
   }
   os << getName() << " = fcmp " << fmath << condtxt << *a << ", "
      << b->getName();
@@ -2347,12 +2700,14 @@ StateValue FCmp::toSMT(State &s) const {
       case ULE: return a.fule(b);
       case UNE: return a.fune(b);
       case UNO: return a.funo(b);
+      case TRUE:  return expr(true);
+      case FALSE: return expr(false);
       }
       UNREACHABLE();
     };
     auto [val, np] = fm_poison(s, a.value, a.non_poison, b.value, b.non_poison,
                                cmp, fmath, true);
-    return { val.toBVBool(), move(np) };
+    return { val.toBVBool(), std::move(np) };
   };
 
   if (auto agg = a->getType().getAsAggregateType()) {
@@ -2377,9 +2732,10 @@ unique_ptr<Instr> FCmp::dup(const string &suffix) const {
   return make_unique<FCmp>(getType(), getName() + suffix, cond, *a, *b, fmath);
 }
 
-util::ConcreteVal * FCmp::concreteEval(std::map<const Value *, util::ConcreteVal *> &concrete_vals) const{
-  auto v = new ConcreteValFloat(false, llvm::APFloat(0.0));
-  return v;
+std::shared_ptr<util::ConcreteVal>
+FCmp::concreteEval(Interpreter &interpreter) const {
+  interpreter.setUnsupported(getOpcodeName());
+  return nullptr;
   //TODO support fcmp with vector operands
   /*
   auto v = new ConcreteVal();
@@ -2508,7 +2864,6 @@ util::ConcreteVal * FCmp::concreteEval(std::map<const Value *, util::ConcreteVal
   */
 }
 
-
 vector<Value*> Freeze::operands() const {
   return { val };
 }
@@ -2532,7 +2887,7 @@ StateValue Freeze::toSMT(State &s) const {
     StateValue ret_type = ty.getDummyValue(true);
     expr nondet = expr::mkFreshVar("nondet", ret_type.value);
     s.addQuantVar(nondet);
-    return { expr::mkIf(np, v, move(nondet)), move(ret_type.non_poison) };
+    return { expr::mkIf(np, v, std::move(nondet)), std::move(ret_type.non_poison) };
   };
 
   // TODO: support recursive aggregates
@@ -2562,7 +2917,7 @@ unique_ptr<Instr> Freeze::dup(const string &suffix) const {
 
 
 void Phi::addValue(Value &val, string &&BB_name) {
-  values.emplace_back(&val, move(BB_name));
+  values.emplace_back(&val, std::move(BB_name));
 }
 
 void Phi::removeValue(const string &BB_name) {
@@ -2660,10 +3015,10 @@ unique_ptr<Instr> Phi::dup(const string &suffix) const {
 
 
 const BasicBlock& JumpInstr::target_iterator::operator*() const {
-  if (auto br = dynamic_cast<Branch*>(instr))
+  if (auto br = dynamic_cast<const Branch*>(instr))
     return idx == 0 ? br->getTrue() : *br->getFalse();
 
-  if (auto sw = dynamic_cast<Switch*>(instr))
+  if (auto sw = dynamic_cast<const Switch*>(instr))
     return idx == 0 ? *sw->getDefault() : *sw->getTarget(idx-1).second;
 
   UNREACHABLE();
@@ -2673,9 +3028,9 @@ JumpInstr::target_iterator JumpInstr::it_helper::end() const {
   unsigned idx;
   if (!instr) {
     idx = 0;
-  } else if (auto br = dynamic_cast<Branch*>(instr)) {
+  } else if (auto br = dynamic_cast<const Branch*>(instr)) {
     idx = br->getFalse() ? 2 : 1;
-  } else if (auto sw = dynamic_cast<Switch*>(instr)) {
+  } else if (auto sw = dynamic_cast<const Switch*>(instr)) {
     idx = sw->getNumTargets() + 1;
   } else {
     UNREACHABLE();
@@ -2779,10 +3134,10 @@ StateValue Switch::toSMT(State &s) const {
     assert(target.non_poison.isTrue());
     expr cmp = val.value == target.value;
     default_cond &= !cmp;
-    s.addJump(move(cmp), *bb);
+    s.addJump(std::move(cmp), *bb);
   }
 
-  s.addJump(move(default_cond), *default_target);
+  s.addJump(std::move(default_cond), *default_target);
   s.addUB(expr(false));
   return {};
 }
@@ -2832,7 +3187,7 @@ check_ret_attributes(State &s, StateValue &&sv, const Type &t,
     }
     return agg->aggregateVals(vals);
   }
-  return check_return_value(s, move(sv), t, attrs, true);
+  return check_return_value(s, std::move(sv), t, attrs, true);
 }
 
 StateValue Return::toSMT(State &s) const {
@@ -2845,7 +3200,7 @@ StateValue Return::toSMT(State &s) const {
     retval = s[*val];
 
   s.addUB(s.getMemory().checkNocapture());
-  retval = check_ret_attributes(s, move(retval), getType(), attrs);
+  retval = check_ret_attributes(s, std::move(retval), getType(), attrs);
 
   if (attrs.has(FnAttrs::NoReturn))
     s.addUB(expr(false));
@@ -2857,7 +3212,7 @@ StateValue Return::toSMT(State &s) const {
     s.addUB(retval == s[*val_returned]);
   }
 
-  s.addReturn(move(retval));
+  s.addReturn(std::move(retval));
   return {};
 }
 
@@ -2879,7 +3234,7 @@ Assume::Assume(Value &cond, Kind kind)
 }
 
 Assume::Assume(vector<Value *> &&args0, Kind kind)
-    : Instr(Type::voidTy, "assume"), args(move(args0)), kind(kind) {
+    : Instr(Type::voidTy, "assume"), args(std::move(args0)), kind(kind) {
   if (args.size() == 1)
     assert(kind == AndNonPoison || kind == IfNonPoison || kind == WellDefined ||
            kind == NonNull);
@@ -2898,15 +3253,23 @@ void Assume::rauw(const Value &what, Value &with) {
 }
 
 void Assume::print(ostream &os) const {
+  const char *str = nullptr;
   switch (kind) {
-  case AndNonPoison: os << "assume"; break;
-  case IfNonPoison: os << "assume_non_poison"; break;
-  case WellDefined: os << "assume_welldefined"; break;
-  case Align: os << "assume_align"; break;
-  case NonNull: os << "assume_nonnull"; break;
+  case AndNonPoison: str = "assume "; break;
+  case IfNonPoison:  str = "assume_non_poison "; break;
+  case WellDefined:  str = "assume_welldefined "; break;
+  case Align:        str = "assume_align "; break;
+  case NonNull:      str = "assume_nonnull "; break;
   }
-  for (auto &arg: args)
-    os << ' ' << *arg;
+  os << str;
+
+  bool first = true;
+  for (auto &arg: args) {
+    if (!first)
+      os << ", ";
+    os << *arg;
+    first = false;
+  }
 }
 
 StateValue Assume::toSMT(State &s) const {
@@ -2927,10 +3290,13 @@ StateValue Assume::toSMT(State &s) const {
   case Align: {
     // assume(ptr, align)
     const auto &vptr = s.getAndAddPoisonUB(*args[0]);
-    uint64_t align = *dynamic_cast<IntConst *>(args[1])->getInt();
-
-    Pointer ptr(s.getMemory(), vptr.value);
-    s.addUB(ptr.isAligned(align));
+    if (auto align = dynamic_cast<IntConst *>(args[1])) {
+      Pointer ptr(s.getMemory(), vptr.value);
+      s.addUB(ptr.isAligned(*align->getInt()));
+    } else {
+      // TODO: add support for non-constant align
+      s.addUB(expr());
+    }
     break;
   }
   case NonNull: {
@@ -2964,17 +3330,42 @@ unique_ptr<Instr> Assume::dup(const string &suffix) const {
   return make_unique<Assume>(vector<Value *>(args), kind);
 }
 
+std::shared_ptr<util::ConcreteVal>
+Assume::concreteEval(util::Interpreter &interpreter) const {
+  auto &arg = *interpreter.concrete_vals[args[0]];
+  switch (kind) {
+  case AndNonPoison:
+    if (arg.isPoison() || arg.isUndef() ||
+        !static_cast<const ConcreteValInt &>(arg).getBoolVal())
+      interpreter.UB_flag = true;
+    break;
+  case IfNonPoison:
+    if (!arg.isPoison() &&
+        !static_cast<const ConcreteValInt &>(arg).getBoolVal())
+      interpreter.UB_flag = true;
+    break;
+  case WellDefined:
+    if (arg.isPoison())
+      interpreter.UB_flag = true;
+    break;
+  case Align:
+    interpreter.setUnsupported("assume.align");
+    break;
+  case NonNull:
+    interpreter.setUnsupported("assume.nonnull");
+    break;
+  }
+  return make_shared<ConcreteValVoid>();
+}
 
-MemInstr::ByteAccessInfo
-MemInstr::ByteAccessInfo::intOnly(unsigned bytesz) {
+MemInstr::ByteAccessInfo MemInstr::ByteAccessInfo::intOnly(unsigned bytesz) {
   ByteAccessInfo info;
   info.byteSize = bytesz;
   info.hasIntByteAccess = true;
   return info;
 }
 
-MemInstr::ByteAccessInfo
-MemInstr::ByteAccessInfo::anyType(unsigned bytesz) {
+MemInstr::ByteAccessInfo MemInstr::ByteAccessInfo::anyType(unsigned bytesz) {
   ByteAccessInfo info;
   info.byteSize = bytesz;
   return info;
@@ -2991,43 +3382,17 @@ MemInstr::ByteAccessInfo::get(const Type &t, bool store, unsigned align) {
   return info;
 }
 
-MemInstr::ByteAccessInfo
-MemInstr::ByteAccessInfo::full(unsigned byteSize) {
-  return { true, true, true, byteSize };
+MemInstr::ByteAccessInfo MemInstr::ByteAccessInfo::full(unsigned byteSize) {
+  return { true, true, true, true, byteSize };
 }
 
-static void eq_bids(OrExpr &acc, Memory &m, const Type &t,
-                    const StateValue &val, const expr &bid) {
-  if (auto agg = t.getAsAggregateType()) {
-    for (unsigned i = 0, e = agg->numElementsConst(); i != e; ++i) {
-      eq_bids(acc, m, agg->getChild(i), agg->extract(val, i), bid);
-    }
-    return;
-  }
-
-  if (t.isPtrType()) {
-    acc.add(val.non_poison && Pointer(m, val.value).getBid() == bid);
-  }
-}
-
-static expr ptr_only_args(State &s, const Pointer &p) {
-  expr bid = p.getBid();
-  auto &m  = s.getMemory();
-
-  OrExpr e;
-  for (auto &in : s.getFn().getInputs()) {
-    if (hasPtr(in.getType()))
-      eq_bids(e, m, in.getType(), s[in], bid);
-  }
-  return e();
-}
 
 static void check_can_load(State &s, const expr &p0) {
   auto &attrs = s.getFn().getFnAttrs();
   Pointer p(s.getMemory(), p0);
 
   if (attrs.has(FnAttrs::NoRead))
-    s.addUB(p.isLocal());
+    s.addUB(p.isLocal() || p.isConstGlobal());
   else if (attrs.has(FnAttrs::ArgMemOnly))
     s.addUB(p.isLocal() || ptr_only_args(s, p));
 }
@@ -3104,7 +3469,7 @@ StateValue Alloc::toSMT(State &s) const {
   expr ptr = s.getMemory().alloc(sz, align, Memory::STACK, true, true).first;
   if (initially_dead)
     s.getMemory().free(ptr, true);
-  return { move(ptr), true };
+  return { std::move(ptr), true };
 }
 
 expr Alloc::getTypeConstraints(const Function &f) const {
@@ -3120,6 +3485,40 @@ unique_ptr<Instr> Alloc::dup(const string &suffix) const {
   return a;
 }
 
+shared_ptr<ConcreteVal> Alloc::concreteEval(Interpreter &interpreter) const {
+
+  // alloc in alive always has an int type
+  assert(size->getType().isIntType());
+
+  uint64_t block_size = 1;
+  assert(interpreter.concrete_vals.contains(size));
+  if (mul) {
+    assert(interpreter.concrete_vals.contains(mul));
+    auto mul_c_val = interpreter.concrete_vals[mul].get();
+    auto mul_int_val = dynamic_cast<ConcreteValInt *>(mul_c_val);
+    if (mul_int_val->isPoison()) {
+      interpreter.UB_flag = true;
+      return nullptr;
+    }
+    block_size = mul_int_val->getVal().getZExtValue();
+  }
+
+  auto size_c_val = interpreter.concrete_vals[size].get();
+  auto size_int_val = dynamic_cast<ConcreteValInt *>(size_c_val);
+  if (size_int_val->isPoison()) {
+    interpreter.UB_flag = true;
+    return nullptr;
+  }
+  block_size *= size_int_val->getVal().getZExtValue();
+  // TODO: handle initially_dead
+  ConcreteBlock new_block;
+  new_block.align_bits = ilog2(align);
+  new_block.size = block_size;
+  auto res =
+      new ConcreteValPointer(false, interpreter.local_mem_blocks.size(), 0, true);
+  interpreter.local_mem_blocks.push_back(std::move(new_block));
+  return shared_ptr<ConcreteVal>(res);
+}
 
 DEFINE_AS_RETZERO(Malloc, getMaxAccessSize);
 DEFINE_AS_RETZERO(Malloc, getMaxGEPOffset);
@@ -3133,7 +3532,7 @@ bool Malloc::canFree() const {
   return ptr != nullptr;
 }
 
-unsigned Malloc::getAlign() const {
+uint64_t Malloc::getAlign() const {
   return align ? align : heap_block_alignment;
 }
 
@@ -3175,11 +3574,10 @@ StateValue Malloc::toSMT(State &s) const {
 
   if (!ptr) {
     if (isNonNull) {
-      // TODO: In C++ we need to throw an exception if the allocation fails,
-      // but exception hasn't been modeled yet
-      s.addPre(move(allocated));
+      s.addPre(std::move(allocated));
       ret = p_new;
     }
+    // TODO: In C++ we need to throw an exception if the allocation fails.
   } else {
     auto &[p, np_ptr] = s.getAndAddUndefs(*ptr);
     s.addUB(np_ptr);
@@ -3195,7 +3593,7 @@ StateValue Malloc::toSMT(State &s) const {
     // 2) If allocation failed, we should not free previous ptr.
     m.free(expr::mkIf(sz == 0 || allocated, p, nullp), false);
   }
-  return { move(ret), true };
+  return { std::move(ret), true };
 }
 
 expr Malloc::getTypeConstraints(const Function &f) const {
@@ -3206,9 +3604,11 @@ expr Malloc::getTypeConstraints(const Function &f) const {
 }
 
 unique_ptr<Instr> Malloc::dup(const string &suffix) const {
-  if (ptr)
-    return make_unique<Malloc>(getType(), getName() + suffix, *ptr, *size);
-  return make_unique<Malloc>(getType(), getName() + suffix, *size, isNonNull);
+  return ptr
+    ? make_unique<Malloc>(getType(), getName() + suffix, *ptr, *size, isNonNull,
+                          align)
+    : make_unique<Malloc>(getType(), getName() + suffix, *size, isNonNull,
+                          align);
 }
 
 
@@ -3233,7 +3633,7 @@ Calloc::ByteAccessInfo Calloc::getByteAccessInfo() const {
   return info;
 }
 
-unsigned Calloc::getAlign() const {
+uint64_t Calloc::getAlign() const {
   return align ? align : heap_block_alignment;
 }
 
@@ -3503,6 +3903,51 @@ unique_ptr<Instr> GEP::dup(const string &suffix) const {
   return dup;
 }
 
+shared_ptr<ConcreteVal> GEP::concreteEval(Interpreter &interpreter) const {
+  assert(interpreter.concrete_vals.contains(ptr));
+  auto ptr_val = interpreter.concrete_vals[ptr].get();
+  auto c_ptr_val = dynamic_cast<ConcreteValPointer *>(ptr_val);
+  assert(c_ptr_val);
+
+  auto res = new ConcreteValPointer(*c_ptr_val);
+  auto &cur_block = interpreter.getBlock(res->getBid(), res->getIsLocal());
+  auto check_in_bounds = [&]() {
+    if (!inbounds)
+      return;
+    int64_t off = res->getOffset();
+    if (off < 0 || (uint64_t)off > cur_block.size)
+      res->setPoison(true);
+  };
+
+  check_in_bounds();
+  long offsets_without_base = 0;
+  for (auto &[size, val] : idxs) {
+    assert(interpreter.concrete_vals.contains(val));
+    auto i_val = interpreter.concrete_vals[val].get();
+    auto i_val_int = dynamic_cast<ConcreteValInt *>(i_val);
+    assert(i_val_int);
+    if (i_val_int->isPoison())
+      res->setPoison(true);
+    auto cur_int_index = i_val_int->getVal().getSExtValue();
+    // TODO: if inbounds, check that signed truncation of i_val_int to
+    // bits_for_offset bits is equal to i_val_int.
+    long mul_res;
+    bool mul_ov = __builtin_smull_overflow(cur_int_index, size, &mul_res);
+    long new_offset;
+    bool add_ov =
+        __builtin_saddl_overflow(res->getOffset(), mul_res, &new_offset);
+    bool add_without_base_ov =
+        __builtin_saddl_overflow(offsets_without_base, mul_res, &offsets_without_base);
+    if (inbounds && (mul_ov || add_ov || add_without_base_ov))
+      res->setPoison(true);
+    // TODO: ConcreteValPointer::offset should probably be unsigned (although
+    // it would only matter if an allocation took up half the address space).
+    res->setOffset(new_offset);
+    check_in_bounds();
+  }
+
+  return shared_ptr<ConcreteVal>(res);
+}
 
 DEFINE_AS_RETZEROALIGN(Load, getMaxAllocSize);
 DEFINE_AS_RETZERO(Load, getMaxGEPOffset);
@@ -3533,7 +3978,7 @@ StateValue Load::toSMT(State &s) const {
   auto &p = s.getAndAddPoisonUB(*ptr, true).value;
   check_can_load(s, p);
   auto [sv, ub] = s.getMemory().load(p, getType(), align);
-  s.addUB(move(ub));
+  s.addUB(std::move(ub));
   return sv;
 }
 
@@ -3546,6 +3991,116 @@ unique_ptr<Instr> Load::dup(const string &suffix) const {
   return make_unique<Load>(getType(), getName() + suffix, *ptr, align);
 }
 
+static util::ConcreteVal *loadIntVal(Interpreter &interpreter,
+                                     util::ConcreteValPointer *ptr,
+                                     unsigned int bitwidth) {
+  if ((bitwidth < 8) || ((bitwidth % 8) != 0)) { // TODO Relax this constraint
+    interpreter.setUnsupported("loadIntVal unsupported int bitwidth");
+    return nullptr;
+  }
+  // cout << "loadIntVal\n";
+  // cout << "ptr bid= " << ptr->getBid()
+  //      << ",offset=" << ptr->getOffset()
+  //      << ",poison=" << ptr->isPoison() << "\n";
+  // cout << "getting block\n";
+  auto &cur_block = interpreter.getBlock(ptr->getBid(), ptr->getIsLocal());
+  // cur_block.print(cout);
+  auto num_bytes = bitwidth / 8;
+  if (bitwidth > (num_bytes * 8))
+    num_bytes += 1;
+
+  auto res = new ConcreteValInt(false, llvm::APInt(bitwidth, 0));
+  for (unsigned int i = 0; i < num_bytes; ++i) {
+    auto &cur_byte = cur_block.getByte(ptr->getOffset() + i, interpreter.UB_flag);
+    if (interpreter.UB_flag)
+      return nullptr;
+    if (cur_byte.is_pointer) {
+      // We should do ptrtoint here and extract the bits we need, but it isn't
+      // implemented yet.
+      interpreter.setUnsupported("load pointer as integer");
+      return nullptr;
+    }
+
+    if (cur_byte.intValue().first == 0) {
+      // if (cur_byte == cur_block.default_byte ||
+      // cur_byte.intValue().isPoison()) { cout << "encountered default byte\n";
+      res->setPoison(true);
+      return res;
+    } else {
+      auto byte_val_int = llvm::APInt(bitwidth, cur_byte.intValue().second);
+      byte_val_int <<= (i * 8);
+      res->setVal(res->getVal() += byte_val_int);
+    }
+  }
+  return res;
+}
+
+static util::ConcreteVal *loadPtrVal(Interpreter &interpreter,
+                                     util::ConcreteValPointer *ptr,
+                                     unsigned int bytes_per_ptr) {
+
+  assert(bytes_per_ptr != 0 && "bytes_per_ptr must be non-zero");
+
+  cout << "bytes_per_ptr = " << bytes_per_ptr << "\n";
+
+  auto &cur_block = interpreter.getBlock(ptr->getBid(), ptr->getIsLocal());
+
+  auto first_byte_ptr = cur_block.getByte(ptr->getOffset(), interpreter.UB_flag);
+  if (interpreter.UB_flag)
+    return nullptr;
+  if (!first_byte_ptr.is_pointer) {
+    // It's possible the program could have run ptrtoint and stored the result
+    // to memory, so we need to do inttoptr now. But it isn't implemented yet.
+    interpreter.setUnsupported("load an integer as a pointer");
+    return nullptr;
+  }
+  if (first_byte_ptr.pointer_byte_offset != 0) {
+    interpreter.UB_flag = true;
+    return nullptr;
+  }
+
+  for (unsigned int i = 1; i < bytes_per_ptr; ++i) {
+    auto &cur_ptr_byte = cur_block.getByte(ptr->getOffset() + i, interpreter.UB_flag);
+
+    if (interpreter.UB_flag || !cur_ptr_byte.is_pointer ||
+        cur_ptr_byte.pointerValue() != first_byte_ptr.pointerValue() ||
+        cur_ptr_byte.pointer_byte_offset != i) {
+      // Technically, I'm not sure if this is UB if the program stored one copy
+      // of a pointer directly and one copy using ptrtoint and mixed up the
+      // bytes of both. But that's such a rare case that we shouldn't worry
+      // about it.
+      interpreter.UB_flag = true;
+      return nullptr;
+    }
+  }
+
+  auto res = new ConcreteValPointer(first_byte_ptr.pointerValue());
+  return res;
+}
+
+std::shared_ptr<util::ConcreteVal>
+Load::concreteEval(Interpreter &interpreter) const {
+  // TODO: check alignment
+  auto ptr_I = interpreter.concrete_vals.find(ptr);
+  assert(ptr_I != interpreter.concrete_vals.end());
+  auto concrete_ptr = ptr_I->second.get();
+  auto c_ptr = dynamic_cast<ConcreteValPointer *>(concrete_ptr);
+  assert(c_ptr);
+
+  if (getType().isIntType()) {
+    // todo handle multiple integer bitwidth
+    return shared_ptr<ConcreteVal>(
+        loadIntVal(interpreter, c_ptr, getType().bits()));
+  } else if (getType().isPtrType()) {
+    return shared_ptr<ConcreteVal>(
+        loadPtrVal(interpreter, c_ptr, bits_program_pointer / bits_byte));
+  } else { // floating point, etc
+    interpreter.setUnsupported("load a value unsupported type");
+    return nullptr;
+  }
+
+  UNREACHABLE();
+}
 
 DEFINE_AS_RETZEROALIGN(Store, getMaxAllocSize);
 DEFINE_AS_RETZERO(Store, getMaxGEPOffset);
@@ -3596,6 +4151,82 @@ unique_ptr<Instr> Store::dup(const string &suffix) const {
   return make_unique<Store>(*ptr, *val, align);
 }
 
+static void storeIntVal(Interpreter &interpreter, util::ConcreteValPointer *ptr,
+                        util::ConcreteValInt *int_val) {
+  // ptr->print();
+  auto bitwidth = int_val->getVal().getBitWidth();
+  if ((bitwidth % 8) != 0) { // FIXME relax this constraint
+    interpreter.setUnsupported("storeIntVal unsupported bitwidth");
+    return;
+  }
+
+  auto &cur_block = interpreter.getBlock(ptr->getBid(), ptr->getIsLocal());
+  auto num_bytes = bitwidth / 8;
+
+  if (bitwidth > (num_bytes * 8))
+    num_bytes += 1;
+
+  auto tgt_val = int_val->getVal();
+  for (unsigned int i = 0; i < num_bytes; ++i) {
+    auto &cur_byte =
+        cur_block.getByte(ptr->getOffset() + i, interpreter.UB_flag);
+    if (interpreter.UB_flag)
+      return;
+
+    // This will fail for types that are non multiples of 8
+    auto tgt_byte = tgt_val.extractBits(8, i * 8);
+    cur_byte = ConcreteByte(
+        DataByteVal(int_val->isPoison() ? 0 : 255, tgt_byte.getZExtValue()));
+  }
+}
+
+
+static void storePtrVal(Interpreter &interpreter,
+                        util::ConcreteValPointer *ptr_dst,
+                        util::ConcreteValPointer *ptr_val,
+                        unsigned int bytes_per_ptr) {
+
+  auto &dst_block = interpreter.getBlock(ptr_dst->getBid(), ptr_dst->getIsLocal());
+  // cout << "storePtrVal bytes_per_ptr= " << bytes_per_ptr << "\n";
+  
+  for (unsigned int i = 0; i < bytes_per_ptr; ++i) {
+    auto &dst_deref_byte =
+        dst_block.getByte(ptr_dst->getOffset() + i, interpreter.UB_flag);
+
+    if (interpreter.UB_flag)
+      return;
+    dst_deref_byte.is_pointer = true;
+    dst_deref_byte.pointer_byte_offset = i;
+    dst_deref_byte.pointerValue() = *ptr_val;
+  }
+
+  return;
+}
+
+std::shared_ptr<util::ConcreteVal>
+Store::concreteEval(Interpreter &interpreter) const {
+  // TODO: check alignment
+  auto ptr_I = interpreter.concrete_vals.find(ptr);
+  assert(ptr_I != interpreter.concrete_vals.end());
+  auto concrete_ptr = ptr_I->second.get();
+  auto c_ptr = dynamic_cast<ConcreteValPointer *>(concrete_ptr);
+  auto val_I = interpreter.concrete_vals.find(val);
+  assert(val_I != interpreter.concrete_vals.end());
+  auto concrete_store_val = val_I->second.get();
+
+  if (val->getType().isPtrType()) {
+    auto c_ptr_val = dynamic_cast<ConcreteValPointer *>(concrete_store_val);
+    storePtrVal(interpreter, c_ptr, c_ptr_val,
+                bits_program_pointer / bits_byte);
+  } else if (val->getType().isIntType()) {
+    auto c_int_val = dynamic_cast<ConcreteValInt *>(concrete_store_val);
+    storeIntVal(interpreter, c_ptr, c_int_val);
+  } else {
+    interpreter.setUnsupported("store to value");
+  }
+
+  return nullptr;
+}
 
 DEFINE_AS_RETZEROALIGN(Memset, getMaxAllocSize);
 DEFINE_AS_RETZERO(Memset, getMaxGEPOffset);
@@ -3637,8 +4268,9 @@ StateValue Memset::toSMT(State &s) const {
   } else {
     auto &sv_ptr = s[*ptr];
     auto &sv_ptr2 = s[*ptr];
-    s.addUB((vbytes != 0).implies(
-        sv_ptr.non_poison && (sv_ptr.value == sv_ptr2.value)));
+    // can't be poison even if bytes=0 as address must be aligned regardless
+    s.addUB(sv_ptr.non_poison);
+    s.addUB((vbytes != 0).implies(sv_ptr.value == sv_ptr2.value));
     vptr = sv_ptr.value;
   }
   check_can_store(s, vptr);
@@ -3707,7 +4339,6 @@ uint64_t Memcpy::getMaxAccessSize() const {
 }
 
 Memcpy::ByteAccessInfo Memcpy::getByteAccessInfo() const {
-  unsigned byteSize = 1;
 #if 0
   if (auto bytes = get_int(i->getBytes()))
     byteSize = gcd(gcd(i->getSrcAlign(), i->getDstAlign()), *bytes);
@@ -3715,7 +4346,9 @@ Memcpy::ByteAccessInfo Memcpy::getByteAccessInfo() const {
   // FIXME: memcpy doesn't have multi-byte support
   // Memcpy does not have sub-byte access, unless the sub-byte type appears
   // at other instructions
-  return ByteAccessInfo::full(byteSize);
+  auto info = ByteAccessInfo::full(1);
+  info.observesAddresses = false;
+  return info;
 }
 
 vector<Value*> Memcpy::operands() const {
@@ -3783,7 +4416,9 @@ uint64_t Memcmp::getMaxAccessSize() const {
 }
 
 Memcmp::ByteAccessInfo Memcmp::getByteAccessInfo() const {
-  return ByteAccessInfo::intOnly(1); /* memcmp raises UB on ptr bytes */
+  auto info = ByteAccessInfo::anyType(1);
+  info.observesAddresses = true;
+  return info;
 }
 
 vector<Value*> Memcmp::operands() const {
@@ -3817,7 +4452,6 @@ StateValue Memcmp::toSMT(State &s) const {
   s.addUB(p2.isDereferenceable(vnum, 1, false));
 
   expr zero = expr::mkUInt(0, 32);
-  auto &vn = vnum;
 
   expr result_var, result_var_neg;
   if (is_bcmp) {
@@ -3838,31 +4472,42 @@ StateValue Memcmp::toSMT(State &s) const {
 
   auto ith_exec =
       [&, this](unsigned i, bool is_last) -> tuple<expr, expr, AndExpr, expr> {
-    auto [val1, ub1] = s.getMemory().load((p1 + i)(), IntType("i8", 8), 1);
-    auto [val2, ub2] = s.getMemory().load((p2 + i)(), IntType("i8", 8), 1);
-
-    AndExpr ub_and;
-    ub_and.add(move(ub1));
-    ub_and.add(move(ub2));
+    assert(bits_byte == 8); // TODO: remove constraint
+    auto val1 = s.getMemory().raw_load(p1 + i);
+    auto val2 = s.getMemory().raw_load(p2 + i);
+    expr is_ptr1 = val1.isPtr();
+    expr is_ptr2 = val2.isPtr();
 
     expr result_neq;
     if (is_bcmp) {
       result_neq = result_var;
     } else {
-      auto pos = val1.value.uge(val2.value);
+      expr pos
+        = mkIf_fold(is_ptr1,
+                    val1.ptr().getAddress().uge(val2.ptr().getAddress()),
+                    val1.nonptrValue().uge(val2.nonptrValue()));
       result_neq = expr::mkIf(pos, result_var, result_var_neg);
     }
 
-    auto val_eq = val1.value == val2.value;
+    // allow null <-> 0 comparison
+    expr val_eq =
+      (is_ptr1 == is_ptr2 &&
+       mkIf_fold(is_ptr1,
+                 val1.ptr().getAddress() == val2.ptr().getAddress(),
+                 val1.nonptrValue() == val2.nonptrValue())) ||
+      (val1.isZero() && val2.isZero());
+
+    expr np
+      = (is_ptr1 == is_ptr2 || val1.isZero() || val2.isZero()) &&
+        !val1.isPoison() && !val2.isPoison();
+
     return { expr::mkIf(val_eq, zero, result_neq),
-             val1.non_poison && val2.non_poison,
-             move(ub_and),
-             val_eq && vn.uge(i + 2) };
+             std::move(np), {},
+             val_eq && vnum.uge(i + 2) };
   };
   auto [val, np, ub]
     = LoopLikeFunctionApproximator(ith_exec).encode(s, memcmp_unroll_cnt);
-  s.addUB((vnum != 0).implies(move(ub)));
-  return { expr::mkIf(vnum == 0, zero, move(val)), (vnum != 0).implies(np) };
+  return { expr::mkIf(vnum == 0, zero, std::move(val)), (vnum != 0).implies(np) };
 }
 
 expr Memcmp::getTypeConstraints(const Function &f) const {
@@ -3912,14 +4557,14 @@ StateValue Strlen::toSMT(State &s) const {
       [&s, &p, &ty](unsigned i, bool _) -> tuple<expr, expr, AndExpr, expr> {
     AndExpr ub;
     auto [val, ub_load] = s.getMemory().load((p + i)(), IntType("i8", 8), 1);
-    ub.add(move(ub_load));
-    ub.add(move(val.non_poison));
-    return { expr::mkUInt(i, ty.bits()), true, move(ub), val.value != 0 };
+    ub.add(std::move(ub_load));
+    ub.add(std::move(val.non_poison));
+    return { expr::mkUInt(i, ty.bits()), true, std::move(ub), val.value != 0 };
   };
   auto [val, _, ub]
     = LoopLikeFunctionApproximator(ith_exec).encode(s, strlen_unroll_cnt);
-  s.addUB(move(ub));
-  return { move(val), true };
+  s.addUB(std::move(ub));
+  return { std::move(val), true };
 }
 
 expr Strlen::getTypeConstraints(const Function &f) const {
@@ -3963,7 +4608,7 @@ StateValue VaStart::toSMT(State &s) const {
     entry.next_arg    = expr::mkIf(eq, zero, entry.next_arg);
     entry.num_args    = expr::mkIf(eq, num_args, entry.num_args);
     entry.is_va_start = expr::mkIf(eq, true, entry.is_va_start);
-    matched_one.add(move(eq));
+    matched_one.add(std::move(eq));
   }
 
   Pointer ptr(s.getMemory(), raw_p);
@@ -3971,7 +4616,7 @@ StateValue VaStart::toSMT(State &s) const {
   s.addUB(ptr.blockSize().uge(4)); // FIXME: this is target dependent
 
   // alive, next_arg, num_args, is_va_start, active
-  data.try_emplace(raw_p, expr(true), move(zero), move(num_args), expr(true),
+  data.try_emplace(raw_p, expr(true), std::move(zero), std::move(num_args), expr(true),
                    !matched_one());
 
   return {};
@@ -4080,7 +4725,7 @@ StateValue VaCopy::toSMT(State &s) const {
 
     next_arg.add(entry.next_arg, select);
     num_args.add(entry.num_args, select);
-    is_va_start.add(entry.is_va_start, move(select));
+    is_va_start.add(entry.is_va_start, std::move(select));
 
     // kill aliases
     entry.active &= ptr != dst_raw;
@@ -4142,7 +4787,7 @@ StateValue VaArg::toSMT(State &s) const {
     };
     expr eq = ptr == raw_p;
     expr select = entry.active && eq;
-    ret.add(move(val), select);
+    ret.add(std::move(val), select);
 
     expr next_arg = entry.next_arg + one;
     s.addUB(select.implies(entry.alive && entry.num_args.uge(next_arg)));
@@ -4180,7 +4825,7 @@ StateValue ExtractElement::toSMT(State &s) const {
   auto vty = static_cast<const VectorType*>(v->getType().getAsAggregateType());
   expr inbounds = iv.ult(vty->numElementsConst());
   auto [rv, rp] = vty->extract(s[*v], iv);
-  return { move(rv), ip && inbounds && rp };
+  return { std::move(rv), ip && inbounds && rp };
 }
 
 expr ExtractElement::getTypeConstraints(const Function &f) const {
@@ -4214,7 +4859,7 @@ StateValue InsertElement::toSMT(State &s) const {
   auto vty = static_cast<const VectorType*>(v->getType().getAsAggregateType());
   expr inbounds = iv.ult(vty->numElementsConst());
   auto [rv, rp] = vty->update(s[*v], s[*e], iv);
-  return { move(rv), expr::mkIf(ip && inbounds, move(rp),
+  return { std::move(rv), expr::mkIf(ip && inbounds, std::move(rp),
                                 vty->getDummyValue(false).non_poison) };
 }
 
@@ -4285,6 +4930,7 @@ const ConversionOp* isCast(ConversionOp::Op op, const Value &v) {
 
 bool hasNoSideEffects(const Instr &i) {
   return isNoOp(i) ||
+         dynamic_cast<const ExtractValue*>(&i) ||
          dynamic_cast<const GEP*>(&i) ||
          dynamic_cast<const ShuffleVector*>(&i);
 }

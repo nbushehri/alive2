@@ -38,3 +38,5 @@ do.end:                                           ; preds = %do.body, %if.then, 
 }
 
 ; ERROR: Source is more defined than target
+; XFAIL: call with escaped locals
+; SKIP-IDENTITY

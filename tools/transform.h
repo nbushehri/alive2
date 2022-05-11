@@ -55,9 +55,14 @@ class TransformVerify {
 public:
   TransformVerify(Transform &t, bool check_each_var);
   std::pair<std::unique_ptr<IR::State>,std::unique_ptr<IR::State>> exec() const;
-  util::Errors verify() const;
+  void verify(util::Errors &errs) const;
   TypingAssignments getTypings() const;
   void fixupTypes(const TypingAssignments &ty);
 };
+
+
+void print_model_val(std::ostream &os, const IR::State &st, const smt::Model &m,
+                     const IR::Value *var, const IR::Type &type,
+                     const IR::StateValue &val, unsigned child = 0);
 
 }
