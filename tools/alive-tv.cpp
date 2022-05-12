@@ -753,7 +753,7 @@ set<int> instrs_32 = {
     AArch64::BFMWri,   AArch64::ORRWrs,   AArch64::ORRWri,  AArch64::SDIVWr,
     AArch64::UDIVWr,   AArch64::EXTRWrri, AArch64::EORWrs,  AArch64::RORVWr,
     AArch64::RBITWr,   AArch64::CLZWr,    AArch64::REVWr,   AArch64::CSNEGWr,
-    AArch64::BICWrs,   AArch64::EONWrs,   AArch64::REV16Wr
+    AArch64::BICWrs,   AArch64::EONWrs,   AArch64::REV16Wr, AArch64::CLSWr
 };
 
 set<int> instrs_64 = {
@@ -770,7 +770,7 @@ set<int> instrs_64 = {
     AArch64::UMADDLrrr, AArch64::RORVXr,   AArch64::RBITXr,  AArch64::CLZXr,
     AArch64::REVXr,     AArch64::CSNEGXr,  AArch64::BICXrs,  AArch64::EONXrs,
     AArch64::SMULHrr,   AArch64::UMULHrr,  AArch64::REV32Xr, AArch64::REV16Xr,
-    AArch64::SMSUBLrrr, AArch64::UMSUBLrrr
+    AArch64::SMSUBLrrr, AArch64::UMSUBLrrr,AArch64::CLSXr
 };
 
 bool has_s(int instr) {
@@ -2035,6 +2035,34 @@ public:
                                          *make_intconst(0, 1), IR::BinOp::Ctlz);
 
       store(*result);
+      break;
+    }
+    case AArch64::CLSWr:
+    case AArch64::CLSXr: {
+      // Count leading sign bits
+      auto input = get_value(1);
+
+      // To count the leading sign bits, we can count leading zeros of the input
+      // and of its inversion, and as one of those two will be zero, we can OR
+      // those to get the total leading sign bits
+      auto leading_zeros_normal =
+          add_instr<IR::BinOp>(*ty, next_name(), *input,
+                               *make_intconst(0, 1), IR::BinOp::Ctlz);
+
+      // NOT operation
+      auto neg_one = make_intconst(-1, size);
+      auto inverted =
+          add_instr<IR::BinOp>(*ty, next_name(), *input, *neg_one, IR::BinOp::Xor);
+
+      auto leading_zeros_inverted =
+          add_instr<IR::BinOp>(*ty, next_name(), *inverted,
+                               *make_intconst(0, 1), IR::BinOp::Ctlz);
+
+      auto leading_sign_bits =
+          add_instr<IR::BinOp>(*ty, next_name(), *leading_zeros_normal,
+                               *leading_zeros_inverted, IR::BinOp::Or);
+
+      store(*leading_sign_bits);
       break;
     }
     case AArch64::EONWrs:
