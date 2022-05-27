@@ -281,14 +281,13 @@ public:
     FnAttrs attrs;
     vector<ParamAttrs> param_attrs;
     if (!approx) {
-      // call_val, attrs, param_attrs, approx
-      auto known = known_call(i, TLI, *BB, args);
-      if (get<0>(known))
-        RETURN_IDENTIFIER(std::move(get<0>(known)));
+      auto [known, attrs0, params0, approx0] = known_call(i, TLI, *BB, args);
+      if (known)
+        RETURN_IDENTIFIER(std::move(known));
 
-      attrs       = std::move(get<1>(known));
-      param_attrs = std::move(get<2>(known));
-      approx      = get<3>(known);
+      attrs       = std::move(attrs0);
+      param_attrs = std::move(params0);
+      approx      = approx0;
     }
 
     auto ty = llvm_type2alive(i.getType());
@@ -315,13 +314,8 @@ public:
     llvm::AttributeList attrs_callsite = i.getAttributes();
     llvm::AttributeList attrs_fndef = fn ? fn->getAttributes()
                                          : llvm::AttributeList();
-    const auto &ret = llvm::AttributeList::ReturnIndex;
-    const auto &fnidx = llvm::AttributeList::FunctionIndex;
 
-    handleRetAttrs(attrs_callsite.getAttributes(ret), attrs);
-    handleRetAttrs(attrs_fndef.getAttributes(ret), attrs);
-    handleFnAttrs(attrs_callsite.getAttributes(fnidx), attrs);
-    handleFnAttrs(attrs_fndef.getAttributes(fnidx), attrs);
+    parse_fn_attrs(i, attrs);
 
     if (auto op = dyn_cast<llvm::FPMathOperator>(&i)) {
       if (op->hasNoNaNs())
@@ -608,7 +602,7 @@ public:
     if (!ty)
       return error(i);
 
-    auto phi = make_unique<Phi>(*ty, value_name(i));
+    auto phi = make_unique<Phi>(*ty, value_name(i), parse_fmath(i));
     todo_phis.emplace_back(phi.get(), &i);
     RETURN_IDENTIFIER(std::move(phi));
   }
@@ -839,8 +833,7 @@ public:
       case llvm::Intrinsic::smin:     op = BinOp::SMin; break;
       case llvm::Intrinsic::smax:     op = BinOp::SMax; break;
       case llvm::Intrinsic::abs:      op = BinOp::Abs; break;
-      default:
-        UNREACHABLE();
+      default: UNREACHABLE();
       }
       RETURN_IDENTIFIER(make_unique<BinOp>(*ty, value_name(i), *a, *b, op));
     }
@@ -892,12 +885,20 @@ public:
     }
     case llvm::Intrinsic::fshl:
     case llvm::Intrinsic::fshr:
+    case llvm::Intrinsic::smul_fix:
+    case llvm::Intrinsic::umul_fix:
+    case llvm::Intrinsic::smul_fix_sat:
+    case llvm::Intrinsic::umul_fix_sat:
     {
       PARSE_TRIOP();
       TernaryOp::Op op;
       switch (i.getIntrinsicID()) {
       case llvm::Intrinsic::fshl: op = TernaryOp::FShl; break;
       case llvm::Intrinsic::fshr: op = TernaryOp::FShr; break;
+      case llvm::Intrinsic::smul_fix: op = TernaryOp::SMulFix; break;
+      case llvm::Intrinsic::umul_fix: op = TernaryOp::UMulFix; break;
+      case llvm::Intrinsic::smul_fix_sat: op = TernaryOp::SMulFixSat; break;
+      case llvm::Intrinsic::umul_fix_sat: op = TernaryOp::UMulFixSat; break;
       default: UNREACHABLE();
       }
       RETURN_IDENTIFIER(
@@ -1019,7 +1020,7 @@ public:
     {
       PARSE_UNOP();
       FpConversionOp::Op op;
-      switch (i.getOpcode()) {
+      switch (i.getIntrinsicID()) {
       case llvm::Intrinsic::experimental_constrained_sitofp:  op = FpConversionOp::SIntToFP; break;
       case llvm::Intrinsic::experimental_constrained_uitofp:  op = FpConversionOp::UIntToFP; break;
       case llvm::Intrinsic::experimental_constrained_fptosi:  op = FpConversionOp::FPToSInt; break;
@@ -1034,18 +1035,27 @@ public:
       case llvm::Intrinsic::experimental_constrained_lround:
       case llvm::Intrinsic::llround:
       case llvm::Intrinsic::experimental_constrained_llround: op = FpConversionOp::LRound; break;
-      default:
-        return error(i);
+      default: UNREACHABLE();
       }
       RETURN_IDENTIFIER(make_unique<FpConversionOp>(*ty, value_name(i), *val,
                                                     op, parse_rounding(i),
                                                     parse_exceptions(i)));
     }
+    case llvm::Intrinsic::is_fpclass:
+    {
+      PARSE_BINOP();
+      TestOp::Op op;
+      switch (i.getIntrinsicID()) {
+      case llvm::Intrinsic::is_fpclass: op = TestOp::Is_FPClass; break;
+      default: UNREACHABLE();
+      }
+      RETURN_IDENTIFIER(make_unique<TestOp>(*ty, value_name(i), *a, *b, op));
+    }
     case llvm::Intrinsic::lifetime_start:
     case llvm::Intrinsic::lifetime_end:
     {
       PARSE_BINOP();
-      switch(getLifetimeKind(i)) {
+      switch (getLifetimeKind(i)) {
       case LIFETIME_START:
         RETURN_IDENTIFIER(make_unique<StartLifetime>(*b));
       case LIFETIME_START_FILLPOISON:
@@ -1063,6 +1073,7 @@ public:
     }
     case llvm::Intrinsic::sideeffect: {
       FnAttrs attrs;
+      parse_fn_attrs(i, attrs);
       attrs.set(FnAttrs::InaccessibleMemOnly);
       attrs.set(FnAttrs::WillReturn);
       attrs.set(FnAttrs::NoThrow);
@@ -1070,6 +1081,7 @@ public:
     }
     case llvm::Intrinsic::trap: {
       FnAttrs attrs;
+      parse_fn_attrs(i, attrs);
       attrs.set(FnAttrs::NoReturn);
       attrs.set(FnAttrs::NoThrow);
       return make_unique<FnCall>(Type::voidTy, "", "#trap", std::move(attrs));
@@ -1392,6 +1404,20 @@ public:
     }
   }
 
+  void parse_fn_attrs(const llvm::CallInst &i, FnAttrs &attrs) {
+    auto fn = i.getCalledFunction();
+    llvm::AttributeList attrs_callsite = i.getAttributes();
+    llvm::AttributeList attrs_fndef = fn ? fn->getAttributes()
+                                          : llvm::AttributeList();
+    auto ret = llvm::AttributeList::ReturnIndex;
+    auto fnidx = llvm::AttributeList::FunctionIndex;
+
+    handleRetAttrs(attrs_callsite.getAttributes(ret), attrs);
+    handleRetAttrs(attrs_fndef.getAttributes(ret), attrs);
+    handleFnAttrs(attrs_callsite.getAttributes(fnidx), attrs);
+    handleFnAttrs(attrs_fndef.getAttributes(fnidx), attrs);
+  }
+
 
   optional<Function> run() {
     constexpr_idx = 0;
@@ -1512,10 +1538,12 @@ public:
         // introduce a new BB even if not always needed.
         auto val = i->getIncomingValue(idx);
         if (has_constant_expr(val)) {
+          auto bridge  = predecessor(i, idx);
+          auto &pred   = getBB(i->getIncomingBlock(idx));
+          BB = &Fn.insertBBAfter(bridge, pred);
+
           auto &phi_bb = getBB(i->getParent());
-          auto bridge = predecessor(i, idx);
-          BB = &Fn.insertBBBefore(bridge, phi_bb);
-          getBB(i->getIncomingBlock(idx)).replaceTargetWith(&phi_bb, BB);
+          pred.replaceTargetWith(&phi_bb, BB);
           if (auto op = get_operand(val)) {
             phi->addValue(*op, std::move(bridge));
             BB->addInstr(make_unique<Branch>(phi_bb));

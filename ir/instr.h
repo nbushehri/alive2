@@ -175,7 +175,7 @@ public:
 
 class TernaryOp final : public Instr {
 public:
-  enum Op { FShl, FShr };
+  enum Op { FShl, FShr, SMulFix, UMulFix, SMulFixSat, UMulFixSat };
 
 private:
   Value *a, *b, *c;
@@ -213,6 +213,28 @@ public:
               FpExceptionMode ex = {})
     : Instr(type, std::move(name)), a(&a), b(&b), c(&c), op(op), fmath(fmath),
       rm(rm), ex(ex) {}
+
+  std::vector<Value*> operands() const override;
+  bool propagatesPoison() const override;
+  void rauw(const Value &what, Value &with) override;
+  void print(std::ostream &os) const override;
+  StateValue toSMT(State &s) const override;
+  smt::expr getTypeConstraints(const Function &f) const override;
+  std::unique_ptr<Instr> dup(const std::string &suffix) const override;
+};
+
+
+class TestOp final : public Instr {
+public:
+  enum Op { Is_FPClass };
+
+private:
+  Value *lhs, *rhs;
+  Op op;
+
+public:
+  TestOp(Type &type, std::string &&name, Value &lhs, Value &rhs, Op op)
+    : Instr(type, std::move(name)), lhs(&lhs), rhs(&rhs), op(op) {}
 
   std::vector<Value*> operands() const override;
   bool propagatesPoison() const override;
@@ -404,8 +426,11 @@ public:
 
 class Phi final : public Instr {
   std::vector<std::pair<Value*, std::string>> values;
+  FastMathFlags fmath;
+
 public:
-  Phi(Type &type, std::string &&name) : Instr(type, std::move(name)) {}
+  Phi(Type &type, std::string &&name, FastMathFlags fmath = {})
+    : Instr(type, std::move(name)), fmath(fmath) {}
 
   void addValue(Value &val, std::string &&BB_name);
   void removeValue(const std::string &BB_name);
