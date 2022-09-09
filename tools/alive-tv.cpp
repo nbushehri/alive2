@@ -233,13 +233,13 @@ set<int> instrs_64 = {
     AArch64::TBZX,      AArch64::TBNZW,     AArch64::TBNZX,
     AArch64::B,         AArch64::CBZW,      AArch64::CBZX,
     AArch64::CBNZW,     AArch64::CBNZX,     AArch64::CCMPXr,
-    AArch64::CCMPXi};
+    AArch64::CCMPXi,    AArch64::BRK};
 
 set<int> instrs_no_write = {AArch64::Bcc,    AArch64::B,      AArch64::TBZW,
                             AArch64::TBZX,   AArch64::TBNZW,  AArch64::TBNZX,
                             AArch64::CBZW,   AArch64::CBZX,   AArch64::CBNZW,
                             AArch64::CBNZX,  AArch64::CCMPWr, AArch64::CCMPWi,
-                            AArch64::CCMPXr, AArch64::CCMPXi};
+                            AArch64::CCMPXr, AArch64::CCMPXi, AArch64::BRK};
 
 bool has_s(int instr) {
   return s_flag.contains(instr);
@@ -3108,6 +3108,14 @@ public:
       store(*result);
       break;
     }
+    case AArch64::BRK: {
+      IR::FnAttrs attrs;
+      attrs.set(IR::FnAttrs::NoReturn);
+      attrs.set(IR::FnAttrs::NoThrow);
+
+      add_instr<IR::FnCall>(IR::Type::voidTy, next_name(), "#trap", std::move(attrs));
+      break;
+    }
     default:
       Fn.print(
           cout << "\nError "
@@ -3268,7 +3276,8 @@ public:
 
       auto jump_instr = dynamic_cast<IR::JumpInstr *>(&BB->back());
       auto ret_instr = dynamic_cast<IR::Return *>(&BB->back());
-      if (!jump_instr && !ret_instr) {
+      auto call_instr = dynamic_cast<IR::FnCall *>(&BB->back());
+      if (!jump_instr && !ret_instr && !call_instr) {
         cout << "Last basicBlock instruction is not a terminator!\n";
         assert(MCBB->getSuccs().size() == 1 &&
                "expected 1 successor for block with no terminator");
