@@ -152,7 +152,7 @@ class Memory {
   }
 
   std::map<smt::expr, AliasSet> ptr_alias; // blockid -> alias
-  unsigned next_nonlocal_bid;
+  unsigned next_nonlocal_bid = 0;
   unsigned nextNonlocalBid();
 
   static bool observesAddresses();
@@ -238,12 +238,18 @@ public:
 
   struct PtrInput {
     StateValue val;
-    unsigned byval;
+    uint64_t byval;
+    bool noread;
+    bool nowrite;
     bool nocapture;
 
-    PtrInput(StateValue &&v, unsigned byval, bool nocapture) :
-      val(std::move(v)), byval(byval), nocapture(nocapture) {}
+    PtrInput(StateValue &&val, uint64_t byval, bool noread, bool nowrite,
+             bool nocapture) :
+      val(std::move(val)), byval(byval), noread(noread), nowrite(nowrite),
+      nocapture(nocapture) {}
+
     smt::expr operator==(const PtrInput &rhs) const;
+    bool eq_attrs(const PtrInput &rhs) const;
     auto operator<=>(const PtrInput &rhs) const = default;
   };
 
@@ -316,7 +322,7 @@ public:
 
   // Returns true if a nocapture pointer byte is not in the memory.
   smt::expr checkNocapture() const;
-  void escapeLocalPtr(const smt::expr &ptr);
+  void escapeLocalPtr(const smt::expr &ptr, const smt::expr &is_ptr);
 
   static Memory mkIf(const smt::expr &cond, const Memory &then,
                      const Memory &els);

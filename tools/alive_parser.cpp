@@ -479,7 +479,7 @@ static Value& get_or_copy_instr(const string &name) {
 
   auto instr_src = dynamic_cast<Instr*>(val_src);
   assert(instr_src);
-  auto tgt_instr = instr_src->dup("");
+  auto tgt_instr = instr_src->dup(*fn, "");
 
   for (auto &op : instr_src->operands()) {
     if (dynamic_cast<Input*>(op)) {
@@ -1050,13 +1050,6 @@ static unique_ptr<Instr> parse_freeze(string_view name) {
   return make_unique<Freeze>(ty, string(name), op);
 }
 
-static unique_ptr<Instr> parse_free() {
-  // free * %op
-  auto &ty = parse_type();
-  auto &op = parse_operand(ty);
-  return make_unique<Free>(op);
-}
-
 static unique_ptr<Instr> parse_call(string_view name) {
   // call ty name(ty_1 %op_1, ..., ty_n %op_n)
   auto &ret_ty = parse_type();
@@ -1095,15 +1088,6 @@ exit:
     call->addArg(*arg, ParamAttrs::None);
   }
   return call;
-}
-
-static unique_ptr<Instr> parse_malloc(string_view name) {
-  // %p = malloc ty %sz
-  auto &ty = parse_type();
-  auto &op = parse_operand(ty);
-  // Malloc returns a pointer at address space 0
-  Type &pointer_type = get_pointer_type(0);
-  return make_unique<Malloc>(pointer_type, string(name), op, false, 0);
 }
 
 static unique_ptr<Instr> parse_extractelement(string_view name) {
@@ -1247,14 +1231,10 @@ static unique_ptr<Instr> parse_instr(string_view name) {
     return parse_icmp(name);
   case FCMP:
     return parse_fcmp(name);
-  case FREE:
-    return parse_free();
   case FREEZE:
     return parse_freeze(name);
   case CALL:
     return parse_call(name);
-  case MALLOC:
-    return parse_malloc(name);
   case EXTRACTELEMENT:
     return parse_extractelement(name);
   case INSERTELEMENT:

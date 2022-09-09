@@ -209,6 +209,16 @@ static bool error(Errors &errs, const State &src_state, const State &tgt_state,
         }
       }
 
+      if (auto call = dynamic_cast<const FnCall*>(var)) {
+        if (m.eval(val.return_domain).isFalse()) {
+          s << *var << " = function did not return!\n";
+          break;
+        } else if (var->isVoid()) {
+          s << "Function " << call->getFnName() << " returned\n";
+          continue;
+        }
+      }
+
       if (!dynamic_cast<const Return*>(var) && // domain always false after exec
           !m.eval(val.domain).isTrue()) {
         s << *var << " = UB triggered!\n";
@@ -380,24 +390,12 @@ static expr encode_undef_refinement(const Type &type, const State::ValTy &a,
 static void
 check_refinement(Errors &errs, const Transform &t, const State &src_state,
                  const State &tgt_state, const Value *var, const Type &type,
-                 const expr &fndom_a, const State::ValTy &ap,
-                 const expr &fndom_b, const State::ValTy &bp,
+                 const State::ValTy &ap, const State::ValTy &bp,
                  bool check_each_var) {
-  if (check_expr(!src_state.sinkDomain()).isUnsat()) {
-    errs.add("The source program doesn't reach a return instruction.\n"
-             "Consider increasing the unroll factor if it has loops", false);
-    return;
-  }
-
-  auto sink_tgt = tgt_state.sinkDomain();
-  if (check_expr(!sink_tgt).isUnsat()) {
-    errs.add("The target program doesn't reach a return instruction.\n"
-             "Consider increasing the unroll factor if it has loops", false);
-    return;
-  }
-
-  auto &dom_a = ap.domain;
-  auto &dom_b = bp.domain;
+  auto &fndom_a  = ap.domain;
+  auto &fndom_b  = bp.domain;
+  auto &retdom_a = ap.return_domain;
+  auto &retdom_b = bp.return_domain;
   auto &a = ap.val;
   auto &b = bp.val;
 
@@ -409,6 +407,7 @@ check_refinement(Errors &errs, const Transform &t, const State &src_state,
 
   AndExpr axioms = src_state.getAxioms();
   axioms.add(tgt_state.getAxioms());
+  expr axioms_expr = axioms();
 
   // note that precondition->toSMT() may add stuff to getPre,
   // so order here matters
@@ -423,12 +422,27 @@ check_refinement(Errors &errs, const Transform &t, const State &src_state,
   expr pre_src = pre_src_and();
   expr pre_tgt = pre_tgt_and();
 
-  expr axioms_expr = axioms();
-  pre_tgt &= !sink_tgt;
-
   if (check_expr(axioms_expr && (pre_src && pre_tgt)).isUnsat()) {
     errs.add("Precondition is always false", false);
     return;
+  }
+
+  {
+    auto sink_src = src_state.sinkDomain();
+    if (!sink_src.isTrue() && check_expr(axioms_expr && !sink_src).isUnsat()) {
+      errs.add("The source program doesn't reach a return instruction.\n"
+               "Consider increasing the unroll factor if it has loops", false);
+      return;
+    }
+
+    auto sink_tgt = tgt_state.sinkDomain();
+    if (!sink_tgt.isTrue() && check_expr(axioms_expr && !sink_tgt).isUnsat()) {
+      errs.add("The target program doesn't reach a return instruction.\n"
+               "Consider increasing the unroll factor if it has loops", false);
+      return;
+    }
+
+    pre_tgt &= !sink_tgt;
   }
 
   expr pre_src_exists, pre_src_forall;
@@ -480,10 +494,10 @@ check_refinement(Errors &errs, const Transform &t, const State &src_state,
   // 2. Check return domain (noreturn check)
   {
     expr dom_constr;
-    if (dom_a.eq(fndom_a) && dom_b.eq(fndom_b)) { // A /\ B /\ A != B
+    if (retdom_a.eq(fndom_a) && retdom_b.eq(fndom_b)) { // A /\ B /\ A != B
       dom_constr = false;
     } else {
-      dom_constr = (fndom_a && fndom_b) && dom_a != dom_b;
+      dom_constr = (fndom_a && fndom_b) && retdom_a != retdom_b;
     }
 
     CHECK(std::move(dom_constr),
@@ -500,7 +514,9 @@ check_refinement(Errors &errs, const Transform &t, const State &src_state,
   };
 
   auto [poison_cnstr, value_cnstr] = type.refines(src_state, tgt_state, a, b);
-  expr dom = dom_a && dom_b;
+  expr dom = retdom_a && retdom_b;
+  if (check_each_var)
+    dom &= fndom_a && fndom_b;
 
   CHECK(dom && !poison_cnstr,
         print_value, "Target is more poisonous than source");
@@ -561,11 +577,10 @@ static unsigned num_ptrs(const Type &ty) {
 static bool returns_local(const Value &v) {
   // no alias fns return local block
   if (auto call = dynamic_cast<const FnCall*>(&v))
-    return call->getAttributes().has(FnAttrs::NoAlias);
+    return call->hasAttribute(FnAttrs::NoAlias) ||
+           call->getAttributes().isAlloc();
 
-  return dynamic_cast<const Alloc*>(&v) ||
-         dynamic_cast<const Malloc*>(&v) ||
-         dynamic_cast<const Calloc*>(&v);
+  return dynamic_cast<const Alloc*>(&v);
 }
 
 static Value *get_base_ptr(Value *ptr) {
@@ -801,13 +816,10 @@ static void calculateAndInitConstants(Transform &t) {
   uint64_t max_access_size = 0;
   uint64_t min_global_size = UINT64_MAX;
 
-  bool nullptr_is_used = false;
+  bool has_null_pointer = false;
   bool has_int2ptr     = false;
   bool has_ptr2int     = false;
   has_alloca       = false;
-  has_dead_allocas = false;
-  has_malloc       = false;
-  has_free         = false;
   has_fncall       = false;
   has_write_fncall = false;
   has_null_block   = false;
@@ -828,6 +840,14 @@ static void calculateAndInitConstants(Transform &t) {
   bool does_mem_access = false;
   bool has_ptr_load = false;
 
+  auto update_min_vect_sz = [&](const Type &ty) {
+    auto elemsz = minVectorElemSize(ty);
+    if (min_vect_elem_sz && elemsz)
+      min_vect_elem_sz = gcd(min_vect_elem_sz, elemsz);
+    else if (elemsz)
+      min_vect_elem_sz = elemsz;
+  };
+
   for (auto fn : { &t.src, &t.tgt }) {
     bool is_src = fn == &t.src;
     unsigned &cur_num_locals = is_src ? num_locals_src : num_locals_tgt;
@@ -840,6 +860,8 @@ static void calculateAndInitConstants(Transform &t) {
       if (!i)
         continue;
 
+      update_min_vect_sz(i->getType());
+
       if (i->hasAttribute(ParamAttrs::Dereferenceable)) {
         does_mem_access = true;
         uint64_t deref_bytes = i->getAttributes().derefBytes;
@@ -847,8 +869,8 @@ static void calculateAndInitConstants(Transform &t) {
       }
       if (i->hasAttribute(ParamAttrs::DereferenceableOrNull)) {
         // Optimization: unless explicitly compared with a null pointer, don't
-        // set nullptr_is_used to true.
-        // Null constant pointer will set nullptr_is_used to true anyway.
+        // set has_null_pointer to true.
+        // Null constant pointer will set has_null_pointer to true anyway.
         // Note that dereferenceable_or_null implies num_ptrinputs > 0,
         // which may turn has_null_block on.
         does_mem_access = true;
@@ -865,20 +887,12 @@ static void calculateAndInitConstants(Transform &t) {
       }
     }
 
-    auto update_min_vect_sz = [&](const Type &ty) {
-      auto elemsz = minVectorElemSize(ty);
-      if (min_vect_elem_sz && elemsz)
-        min_vect_elem_sz = gcd(min_vect_elem_sz, elemsz);
-      else if (elemsz)
-        min_vect_elem_sz = elemsz;
-    };
-
     for (auto &i : fn->instrs()) {
       if (returns_local(i))
         ++cur_num_locals;
 
       for (auto op : i.operands()) {
-        nullptr_is_used |= has_nullptr(op);
+        has_null_pointer |= has_nullptr(op);
         update_min_vect_sz(op->getType());
       }
 
@@ -886,11 +900,13 @@ static void calculateAndInitConstants(Transform &t) {
 
       if (auto fn = dynamic_cast<const FnCall*>(&i)) {
         has_fncall |= true;
-        if (fn->hasAttribute(FnAttrs::InaccessibleMemOnly)) {
-          if (inaccessiblememonly_fns.emplace(fn->getName()).second)
-            ++num_inaccessiblememonly_fns;
-        } else {
-          has_write_fncall |= !fn->hasAttribute(FnAttrs::NoWrite);
+        if (!fn->getAttributes().isAlloc()) {
+          if (fn->hasAttribute(FnAttrs::InaccessibleMemOnly)) {
+            if (inaccessiblememonly_fns.emplace(fn->getName()).second)
+              ++num_inaccessiblememonly_fns;
+          } else {
+            has_write_fncall |= !fn->hasAttribute(FnAttrs::NoWrite);
+          }
         }
       }
 
@@ -901,7 +917,6 @@ static void calculateAndInitConstants(Transform &t) {
                                               aligned_alloc_size(alloc, align));
         max_access_size  = max(max_access_size, mi->getMaxAccessSize());
         cur_max_gep      = add_saturate(cur_max_gep, mi->getMaxGEPOffset());
-        has_free        |= mi->canFree();
 
         auto info = mi->getByteAccessInfo();
         has_ptr_load         |= info.doesPtrLoad;
@@ -914,13 +929,7 @@ static void calculateAndInitConstants(Transform &t) {
             !info.doesPtrLoad && !info.doesPtrStore)
           does_any_byte_access = true;
 
-        if (auto alloc = dynamic_cast<const Alloc*>(&i)) {
-          has_alloca = true;
-          has_dead_allocas |= alloc->initDead();
-        } else {
-          has_malloc |= dynamic_cast<const Malloc*>(&i) != nullptr ||
-                        dynamic_cast<const Calloc*>(&i) != nullptr;
-        }
+        has_alloca |= dynamic_cast<const Alloc*>(&i) != nullptr;
 
       } else if (isCast(ConversionOp::Int2Ptr, i) ||
                   isCast(ConversionOp::Ptr2Int, i)) {
@@ -965,11 +974,13 @@ static void calculateAndInitConstants(Transform &t) {
 
   // check if null block is needed
   // Global variables cannot be null pointers
-  has_null_block = num_null_ptrinputs > 0 || nullptr_is_used || has_malloc ||
+  has_null_block = num_null_ptrinputs > 0 || has_null_pointer ||
                   has_ptr_load || has_fncall || has_int2ptr;
 
   num_nonlocals_src = num_globals_src + num_ptrinputs + num_nonlocals_inst_src +
                       num_inaccessiblememonly_fns + has_null_block;
+
+  null_is_dereferenceable = t.src.getFnAttrs().has(FnAttrs::NullPointerIsValid);
 
   // Allow at least one non-const global for calls to change
   num_nonlocals_src += has_write_fncall;
@@ -1020,6 +1031,7 @@ static void calculateAndInitConstants(Transform &t) {
   // We need this assumption to support negative offsets.
   bits_size_t = bit_width(max_alloc_size);
   bits_size_t = min(max(bits_for_offset, bits_size_t), bits_program_pointer-1);
+  bits_size_t = min(bits_size_t, config::max_sizet_bits);
 
   // +1 because the pointer after the object must be valid (can't overflow)
   uint64_t loc_alloc_aligned_size
@@ -1068,10 +1080,8 @@ static void calculateAndInitConstants(Transform &t) {
                   << "\nstrlen_unroll_cnt: " << strlen_unroll_cnt
                   << "\nmemcmp_unroll_cnt: " << memcmp_unroll_cnt
                   << "\nlittle_endian: " << little_endian
-                  << "\nnullptr_is_used: " << nullptr_is_used
+                  << "\nnullptr_is_used: " << has_null_pointer
                   << "\nobserves_addresses: " << observes_addresses
-                  << "\nhas_malloc: " << has_malloc
-                  << "\nhas_free: " << has_free
                   << "\nhas_null_block: " << has_null_block
                   << "\ndoes_ptr_store: " << does_ptr_store
                   << "\ndoes_mem_access: " << does_mem_access
@@ -1113,6 +1123,9 @@ pair<unique_ptr<State>, unique_ptr<State>> TransformVerify::exec() const {
 }
 
 Errors TransformVerify::verify() const {
+  if (!t.src.getFnAttrs().refinedBy(t.tgt.getFnAttrs()))
+    return { "Function attributes not refined", true };
+
   {
     auto src_inputs = t.src.getInputs();
     auto tgt_inputs = t.tgt.getInputs();
@@ -1191,16 +1204,14 @@ Errors TransformVerify::verify() const {
 
         auto &val_tgt = tgt_state->at(*tgt_instrs.at(name));
         check_refinement(errs, t, *src_state, *tgt_state, var, var->getType(),
-                         val.domain, val, val_tgt.domain, val_tgt,
-                         check_each_var);
+                         val, val_tgt, check_each_var);
         if (errs)
           return errs;
       }
     }
 
     check_refinement(errs, t, *src_state, *tgt_state, nullptr, t.src.getType(),
-                     src_state->functionDomain()(), src_state->returnVal(),
-                     tgt_state->functionDomain()(), tgt_state->returnVal(),
+                     src_state->returnVal(), tgt_state->returnVal(),
                      check_each_var);
   } catch (AliveException e) {
     return std::move(e);
@@ -1379,8 +1390,16 @@ static void optimize_ptrcmp(Function &f) {
     if (auto *gep = dynamic_cast<const GEP*>(&v))
       return gep->isInBounds();
 
-    // noalias functions aren't required to return an inbounds ptr
-    return returns_local(v) && !dynamic_cast<const FnCall*>(&v);
+    if (!returns_local(v))
+      return false;
+
+    if (auto *call = dynamic_cast<const FnCall*>(&v)) {
+      auto &attrs = call->getAttributes();
+      if (attrs.derefBytes > 0 || attrs.derefOrNullBytes > 0)
+        return true;
+      return false;
+    }
+    return true;
   };
 
   for (auto &i : f.instrs()) {
@@ -1426,7 +1445,7 @@ bool Transform::fold(IR::Function &fn) {
       if (folded) {
         auto newI = make_unique<IntConst>(*folded);
         fn.rauw(i1, *newI);
-        fn.addConstant(move(newI));
+        fn.addConstant(std::move(newI));
         bb->delInstr(&i1);
         changed = true;
         goto again;
@@ -1487,7 +1506,7 @@ bool Transform::cleanupTruncExt(IR::Function &fn) {
                                                  extInst->getOp() :
                                                  ConversionOp::Trunc);
 	fn.rauw(i, *newConv);
-        bb->addInstrAt(move(newConv), &i, true);
+        bb->addInstrAt(std::move(newConv), &i, true);
       }
       changed = true;
       bb->delInstr(truncInst);

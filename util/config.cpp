@@ -20,6 +20,7 @@ unsigned src_unroll_cnt = 0;
 unsigned tgt_unroll_cnt = 0;
 bool optimize_ir = false;
 unsigned max_offset_bits = 64;
+unsigned max_sizet_bits = 64;
 
 ostream &dbg() {
   return *debug_os;

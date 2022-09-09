@@ -28,6 +28,7 @@ class State {
 public:
   struct ValTy {
     StateValue val;
+    smt::expr return_domain;
     smt::expr domain;
     std::set<smt::expr> undef_vars;
   };
@@ -36,6 +37,7 @@ private:
   struct CurrentDomain {
     smt::expr path = true; // path from fn entry
     smt::AndExpr UB;
+    smt::expr noreturn;
     std::set<smt::expr> undef_vars;
 
     smt::expr operator()() const;
@@ -121,6 +123,9 @@ private:
   // Global variables' memory block ids & Memory::alloc has been called?
   std::unordered_map<std::string, std::pair<unsigned, bool>> glbvar_bids;
 
+  // The value of a 'returned' input
+  std::optional<StateValue> returned_input;
+
   // temp state
   const BasicBlock *current_bb = nullptr;
   CurrentDomain domain;
@@ -131,7 +136,7 @@ private:
   std::array<StateValue, 64> tmp_values;
   unsigned i_tmp_values = 0; // next available position in tmp_values
 
-  StateValue* no_more_tmp_slots();
+  void check_enough_tmp_slots();
 
   // return_domain: a boolean expression describing return condition
   smt::OrExpr return_domain;
@@ -213,6 +218,7 @@ public:
   void addUB(const smt::expr &ub);
   void addUB(smt::AndExpr &&ubs);
   void addNoReturn(const smt::expr &cond);
+  bool isViablePath() const { return domain.UB; }
 
   std::vector<StateValue>
     addFnCall(const std::string &name, std::vector<StateValue> &&inputs,
@@ -249,12 +255,17 @@ public:
   const auto& getQuantVars() const { return quantified_vars; }
   const auto& getFnQuantVars() const { return fn_call_qvars; }
 
-  auto& functionDomain() const { return function_domain; }
+  void saveReturnedInput();
+  const std::optional<StateValue>& getReturnedInput() const {
+    return returned_input;
+  }
+
   smt::expr sinkDomain() const;
   Memory returnMemory() const { return *return_memory(); }
 
   ValTy returnVal() const {
-    return { *return_val(), return_domain(), return_undef_vars };
+    return { *return_val(), return_domain(), function_domain(),
+             return_undef_vars };
   }
 
   smt::expr getJumpCond(const BasicBlock &src, const BasicBlock &dst) const;

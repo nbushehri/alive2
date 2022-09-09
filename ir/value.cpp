@@ -21,6 +21,10 @@ bool Value::isVoid() const {
   return &getType() == &Type::voidTy;
 }
 
+void Value::rauw(const Value &what, Value &with) {
+  UNREACHABLE();
+}
+
 expr Value::getTypeConstraints() const {
   return getType().getTypeConstraints();
 }
@@ -138,6 +142,14 @@ StateValue AggregateValue::toSMT(State &s) const {
   return getType().getAsAggregateType()->aggregateVals(state_vals);
 }
 
+void AggregateValue::rauw(const Value &what, Value &with) {
+  for (auto &val : vals) {
+    if (val == &what)
+      val = &with;
+  }
+  setName(agg_str(getType(), vals));
+}
+
 expr AggregateValue::getTypeConstraints() const {
   expr r = Value::getTypeConstraints();
   vector<Type*> types;
@@ -198,7 +210,7 @@ StateValue Input::mkInput(State &s, const Type &ty, unsigned child) const {
   if (hasAttribute(ParamAttrs::ByVal)) {
     unsigned bid;
     expr size = expr::mkUInt(attrs.blockSize, bits_size_t);
-    val = get_global(s, getName(), size, attrs.align, false, bid);
+    val = get_global(s, smt_name, size, attrs.align, false, bid);
     s.getMemory().markByVal(bid);
   } else {
     auto name = getSMTName(child);
@@ -215,15 +227,14 @@ StateValue Input::mkInput(State &s, const Type &ty, unsigned child) const {
     s.addUndefVar(std::move(var));
   }
 
-  auto [UB, non_poison] = attrs.encode(s, {expr(val), expr(true)}, ty);
-  s.addUB(std::move(UB));
+  auto state_val = attrs.encode(s, {std::move(val), expr(true)}, ty);
 
   bool never_poison = config::disable_poison_input || attrs.poisonImpliesUB();
   string np_name = "np_" + getSMTName(child);
 
-  return { std::move(val),
-           std::move(non_poison) && (never_poison ? true :
-                                  expr::mkBoolVar(np_name.c_str())) };
+  return { std::move(state_val.value),
+           std::move(state_val.non_poison) &&
+             (never_poison ? true : expr::mkBoolVar(np_name.c_str())) };
 }
 
 bool Input::isUndefMask(const expr &e, const expr &var) {
@@ -235,6 +246,11 @@ bool Input::isUndefMask(const expr &e, const expr &var) {
 
 StateValue Input::toSMT(State &s) const {
   return mkInput(s, getType(), 0);
+}
+
+void Input::merge(const ParamAttrs &other) {
+  attrs.merge(other);
+  setName(attr_str(attrs) + smt_name);
 }
 
 expr Input::getUndefVar(const Type &ty, unsigned child) const {

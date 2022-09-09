@@ -30,9 +30,9 @@ namespace {
 
 FpRoundingMode parse_rounding(llvm::Instruction &i) {
   auto *fp = dyn_cast<llvm::ConstrainedFPIntrinsic>(&i);
-  if (!fp || !fp->getRoundingMode().hasValue())
+  if (!fp || !fp->getRoundingMode().has_value())
     return {};
-  switch (fp->getRoundingMode().getValue()) {
+  switch (*fp->getRoundingMode()) {
   case llvm::RoundingMode::Dynamic:           return FpRoundingMode::Dynamic;
   case llvm::RoundingMode::NearestTiesToAway: return FpRoundingMode::RNA;
   case llvm::RoundingMode::NearestTiesToEven: return FpRoundingMode::RNE;
@@ -45,18 +45,14 @@ FpRoundingMode parse_rounding(llvm::Instruction &i) {
 
 FpExceptionMode parse_exceptions(llvm::Instruction &i) {
   auto *fp = dyn_cast<llvm::ConstrainedFPIntrinsic>(&i);
-  if (!fp || !fp->getExceptionBehavior().hasValue())
+  if (!fp || !fp->getExceptionBehavior().has_value())
     return {};
-  switch (fp->getExceptionBehavior().getValue()) {
+  switch (*fp->getExceptionBehavior()) {
   case llvm::fp::ebIgnore:  return FpExceptionMode::Ignore;
   case llvm::fp::ebMayTrap: return FpExceptionMode::MayTrap;
   case llvm::fp::ebStrict:  return FpExceptionMode::Strict;
   default: UNREACHABLE();
   }
-}
-
-bool has_constant_expr(llvm::Value *val) {
-  return isa<llvm::ConstantExpr, llvm::ConstantAggregate>(val);
 }
 
 unsigned constexpr_idx;
@@ -106,6 +102,7 @@ class llvm2alive_ : public llvm::InstVisitor<llvm2alive_, unique_ptr<Instr>> {
   vector<llvm::Instruction*> i_constexprs;
   const vector<string_view> &gvnamesInSrc;
   vector<pair<Phi*, llvm::PHINode*>> todo_phis;
+  const Instr *insert_constexpr_before = nullptr;
   ostream *out;
   // (LLVM alloca, (Alive2 alloc, has lifetime.start?))
   map<const llvm::AllocaInst *, std::pair<Alloc *, bool>> allocs;
@@ -117,13 +114,13 @@ class llvm2alive_ : public llvm::InstVisitor<llvm2alive_, unique_ptr<Instr>> {
 
   template <typename T>
   uint64_t alignment(T &i, llvm::Type *ty) const {
-    auto a = i.getAlignment();
+    auto a = i.getAlign().value();
     return a != 0 ? a : DL().getABITypeAlignment(ty);
   }
 
   template <typename T>
   uint64_t pref_alignment(T &i, llvm::Type *ty) const {
-    auto a = i.getAlignment();
+    auto a = i.getAlign().value();
     return a != 0 ? a : DL().getPrefTypeAlignment(ty);
   }
 
@@ -137,7 +134,10 @@ class llvm2alive_ : public llvm::InstVisitor<llvm2alive_, unique_ptr<Instr>> {
       return nullptr;
 
     auto i = ptr.get();
-    BB->addInstr(std::move(ptr));
+    if (insert_constexpr_before)
+      BB->addInstrAt(std::move(ptr), insert_constexpr_before, true);
+    else
+      BB->addInstr(std::move(ptr));
     return i;
   }
 
@@ -146,7 +146,10 @@ class llvm2alive_ : public llvm::InstVisitor<llvm2alive_, unique_ptr<Instr>> {
                                   "%__copy_" + to_string(copy_idx++), *ag,
                                   UnaryOp::Copy);
     auto val = v.get();
-    BB->addInstr(std::move(v));
+    if (insert_constexpr_before)
+      BB->addInstrAt(std::move(v), insert_constexpr_before, true);
+    else
+      BB->addInstr(std::move(v));
     return val;
   }
 
@@ -280,14 +283,20 @@ public:
 
     FnAttrs attrs;
     vector<ParamAttrs> param_attrs;
+
+    parse_fn_attrs(i, attrs);
+
+    if (auto op = dyn_cast<llvm::FPMathOperator>(&i)) {
+      if (op->hasNoNaNs())
+        attrs.set(FnAttrs::NNaN);
+    }
+
     if (!approx) {
-      auto [known, attrs0, params0, approx0] = known_call(i, TLI, *BB, args);
+      auto [known, approx0]
+        = known_call(i, TLI, *BB, args, std::move(attrs), param_attrs);
+      approx = approx0;
       if (known)
         RETURN_IDENTIFIER(std::move(known));
-
-      attrs       = std::move(attrs0);
-      param_attrs = std::move(params0);
-      approx      = approx0;
     }
 
     auto ty = llvm_type2alive(i.getType());
@@ -302,7 +311,8 @@ public:
       if (!iasm->canThrow())
         attrs.set(FnAttrs::NoThrow);
       call = make_unique<InlineAsm>(*ty, value_name(i), iasm->getAsmString(),
-                                    iasm->getConstraintString(), std::move(attrs));
+                                    iasm->getConstraintString(),
+                                    std::move(attrs));
     } else {
       if (!fn) // TODO: support indirect calls
         return error(i);
@@ -314,13 +324,6 @@ public:
     llvm::AttributeList attrs_callsite = i.getAttributes();
     llvm::AttributeList attrs_fndef = fn ? fn->getAttributes()
                                          : llvm::AttributeList();
-
-    parse_fn_attrs(i, attrs);
-
-    if (auto op = dyn_cast<llvm::FPMathOperator>(&i)) {
-      if (op->hasNoNaNs())
-        attrs.set(FnAttrs::NNaN);
-    }
 
     if (fn)
       call = make_unique<FnCall>(*ty, value_name(i),
@@ -669,12 +672,12 @@ public:
     llvm::SmallVector<const llvm::Value *> Objs;
     llvm::getUnderlyingObjects(Ptr, Objs);
 
-    if (llvm::all_of(Objs, [this](const llvm::Value *V) {
+    if (llvm::all_of(Objs, [](const llvm::Value *V) {
         // Stack coloring algorithm doesn't assign slots for global variables
         // or objects passed as pointer arguments
-        return llvm::isa<llvm::Argument>(V) ||
-               llvm::isa<llvm::GlobalVariable>(V) ||
-               llvm::isAllocLikeFn(V, &TLI); }))
+        return llvm::isa<llvm::Argument,
+                         llvm::GlobalVariable,
+                         llvm::CallInst>(V); }))
       return LIFETIME_FILLPOISON;
 
     Objs.clear();
@@ -1062,7 +1065,7 @@ public:
         BB->addInstr(make_unique<StartLifetime>(*b));
         RETURN_IDENTIFIER(make_unique<FillPoison>(*b));
       case LIFETIME_FREE:
-        RETURN_IDENTIFIER(make_unique<Free>(*b, false));
+        RETURN_IDENTIFIER(make_unique<EndLifetime>(*b));
       case LIFETIME_FILLPOISON:
         RETURN_IDENTIFIER(make_unique<FillPoison>(*b));
       case LIFETIME_NOP:
@@ -1077,7 +1080,8 @@ public:
       attrs.set(FnAttrs::InaccessibleMemOnly);
       attrs.set(FnAttrs::WillReturn);
       attrs.set(FnAttrs::NoThrow);
-      return make_unique<FnCall>(Type::voidTy, "", "#sideeffect", std::move(attrs));
+      return
+        make_unique<FnCall>(Type::voidTy, "", "#sideeffect", std::move(attrs));
     }
     case llvm::Intrinsic::trap: {
       FnAttrs attrs;
@@ -1206,8 +1210,8 @@ public:
         break;
       }
 
-      case LLVMContext::MD_tbaa:
-        // skip this for now
+      case LLVMContext::MD_noundef:
+        BB->addInstr(make_unique<Assume>(i, Assume::WellDefined));
         break;
 
       // non-relevant for correctness
@@ -1243,13 +1247,15 @@ public:
       case llvm::Attribute::InReg:
         // TODO: not important for IR verification, but we should check that
         // they don't change
-        continue;
+        break;
+      
       case llvm::Attribute::SExt:
         attrs.set(ParamAttrs::Sext);
-        continue;
+        break;
+      
       case llvm::Attribute::ZExt:
         attrs.set(ParamAttrs::Zext);
-        continue;
+        break;
 
       case llvm::Attribute::ByVal: {
         attrs.set(ParamAttrs::ByVal);
@@ -1259,59 +1265,63 @@ public:
 
         attrs.set(ParamAttrs::Align);
         attrs.align = max(attrs.align, DL().getABITypeAlignment(ty));
-        continue;
+        break;
       }
 
       case llvm::Attribute::NonNull:
         attrs.set(ParamAttrs::NonNull);
-        continue;
+        break;
 
       case llvm::Attribute::NoCapture:
         attrs.set(ParamAttrs::NoCapture);
-        continue;
+        break;
 
       case llvm::Attribute::ReadOnly:
-        if (!is_callsite)
-          attrs.set(ParamAttrs::NoWrite);
-        continue;
+        attrs.set(ParamAttrs::NoWrite);
+        break;
 
       case llvm::Attribute::WriteOnly:
-        if (!is_callsite)
-          attrs.set(ParamAttrs::NoRead);
-        continue;
+        attrs.set(ParamAttrs::NoRead);
+        break;
 
       case llvm::Attribute::ReadNone:
-        if (!is_callsite) {
-          // TODO: can this pointer be freed?
-          attrs.set(ParamAttrs::NoRead);
-          attrs.set(ParamAttrs::NoWrite);
-        }
-        continue;
+        // TODO: can this pointer be freed?
+        attrs.set(ParamAttrs::NoRead);
+        attrs.set(ParamAttrs::NoWrite);
+        break;
 
       case llvm::Attribute::Dereferenceable:
         attrs.set(ParamAttrs::Dereferenceable);
         attrs.derefBytes = max(attrs.derefBytes,
                                llvmattr.getDereferenceableBytes());
-        continue;
+        break;
 
       case llvm::Attribute::DereferenceableOrNull:
         attrs.set(ParamAttrs::DereferenceableOrNull);
         attrs.derefOrNullBytes = max(attrs.derefOrNullBytes,
                                      llvmattr.getDereferenceableOrNullBytes());
-        continue;
+        break;
 
       case llvm::Attribute::Alignment:
         attrs.set(ParamAttrs::Align);
         attrs.align = max(attrs.align, llvmattr.getAlignment()->value());
-        continue;
+        break;
 
       case llvm::Attribute::NoUndef:
         attrs.set(ParamAttrs::NoUndef);
-        continue;
+        break;
 
       case llvm::Attribute::Returned:
         attrs.set(ParamAttrs::Returned);
-        continue;
+        break;
+
+      case llvm::Attribute::AllocatedPointer:
+        attrs.set(ParamAttrs::AllocPtr);
+        break;
+
+      case llvm::Attribute::AllocAlign:
+        attrs.set(ParamAttrs::AllocAlign);
+        break;
 
       default:
         // If it is call site, it should be added at approximation list
@@ -1330,6 +1340,8 @@ public:
         continue;
 
       switch (llvmattr.getKindAsEnum()) {
+      case llvm::Attribute::SExt: attrs.set(FnAttrs::Sext); break;
+      case llvm::Attribute::ZExt: attrs.set(FnAttrs::Zext); break;
       case llvm::Attribute::NoAlias: attrs.set(FnAttrs::NoAlias); break;
       case llvm::Attribute::NonNull: attrs.set(FnAttrs::NonNull); break;
       case llvm::Attribute::NoUndef: attrs.set(FnAttrs::NoUndef); break;
@@ -1347,8 +1359,7 @@ public:
 
       case llvm::Attribute::Alignment:
         attrs.set(FnAttrs::Align);
-        attrs.align = max(attrs.align,
-                          (unsigned)llvmattr.getAlignment()->value());
+        attrs.align = max(attrs.align, llvmattr.getAlignment()->value());
         break;
 
       default: break;
@@ -1356,8 +1367,39 @@ public:
     }
   }
 
+  static FPDenormalAttrs::Type parse_fp_denormal_str(string_view str) {
+    if (str == "ieee")          return FPDenormalAttrs::IEEE;
+    if (str == "preserve-sign") return FPDenormalAttrs::PreserveSign;
+    if (str == "positive-zero") return FPDenormalAttrs::PositiveZero;
+    UNREACHABLE();
+  }
+
+  static FPDenormalAttrs parse_fp_denormal(string_view str) {
+    FPDenormalAttrs attr;
+    auto comma = str.find(',');
+    if (comma == string_view::npos) {
+      attr.input = attr.output = parse_fp_denormal_str(str);
+    } else {
+      attr.output = parse_fp_denormal_str(string_view(str.data(), comma));
+      attr.input  = parse_fp_denormal_str(str.data() + comma + 1);
+    }
+    return attr;
+  }
+
   void handleFnAttrs(const llvm::AttributeSet &aset, FnAttrs &attrs) {
     for (const llvm::Attribute &llvmattr : aset) {
+      if (llvmattr.isStringAttribute()) {
+        auto str = llvmattr.getKindAsString();
+        auto val = llvmattr.getValueAsString();
+        if (str == "denormal-fp-math") {
+          attrs.setFPDenormal(parse_fp_denormal(val));
+        } else if (str == "denormal-fp-math-f32") {
+          attrs.setFPDenormal(parse_fp_denormal(val), 32);
+        } else if (str == "alloc-family") {
+          attrs.allocfamily = val;
+        }
+      }
+
       if (!llvmattr.isEnumAttribute() && !llvmattr.isIntAttribute() &&
           !llvmattr.isTypeAttribute())
         continue;
@@ -1390,12 +1432,41 @@ public:
         attrs.set(FnAttrs::NoFree);
         break;
 
+      case llvm::Attribute::AllocSize: {
+        attrs.set(FnAttrs::AllocSize);
+        auto args = llvmattr.getAllocSizeArgs();
+        attrs.allocsize_0 = args.first;
+        if (args.second)
+          attrs.allocsize_1 = *args.second;
+        break;
+      }
+      case llvm::Attribute::AllocKind: {
+        auto kind = llvmattr.getAllocKind();
+        if ((kind & llvm::AllocFnKind::Alloc) != llvm::AllocFnKind::Unknown)
+          attrs.add(AllocKind::Alloc);
+        if ((kind & llvm::AllocFnKind::Realloc) != llvm::AllocFnKind::Unknown)
+          attrs.add(AllocKind::Realloc);
+        if ((kind & llvm::AllocFnKind::Free) != llvm::AllocFnKind::Unknown)
+          attrs.add(AllocKind::Free);
+        if ((kind & llvm::AllocFnKind::Uninitialized)
+              != llvm::AllocFnKind::Unknown)
+          attrs.add(AllocKind::Uninitialized);
+        if ((kind & llvm::AllocFnKind::Zeroed) != llvm::AllocFnKind::Unknown)
+          attrs.add(AllocKind::Zeroed);
+        if ((kind & llvm::AllocFnKind::Aligned) != llvm::AllocFnKind::Unknown)
+          attrs.add(AllocKind::Aligned);
+        break;
+      }
       case llvm::Attribute::NoReturn:
         attrs.set(FnAttrs::NoReturn);
         break;
 
       case llvm::Attribute::WillReturn:
         attrs.set(FnAttrs::WillReturn);
+        break;
+
+      case llvm::Attribute::NullPointerIsValid:
+        attrs.set(FnAttrs::NullPointerIsValid);
         break;
 
       default:
@@ -1440,6 +1511,8 @@ public:
                 f.isVarArg());
     reset_state(Fn);
 
+    auto &attrs = Fn.getFnAttrs();
+    vector<ParamAttrs> param_attrs;
     llvm::AttributeList attrlist = f.getAttributes();
 
     for (unsigned idx = 0; idx < f.arg_size(); ++idx) {
@@ -1461,8 +1534,22 @@ public:
       }
       Fn.addInput(std::move(val));
     }
+    {
+      vector<Value*> args;
+      for (auto &in : Fn.getInputs()) {
+        args.emplace_back(const_cast<Value*>(&in));
+      }
+      vector<ParamAttrs> param_attrs;
+      (void)llvm_implict_attrs(f, TLI, attrs, param_attrs, args);
 
-    auto &attrs = Fn.getFnAttrs();
+      // merge param attrs computed above
+      unsigned idx = 0;
+      for (auto *in : args) {
+        if (idx == param_attrs.size())
+          break;
+        static_cast<Input*>(in)->merge(param_attrs[idx++]);
+      }
+    }
     const auto &ridx = llvm::AttributeList::ReturnIndex;
     const auto &fnidx = llvm::AttributeList::FunctionIndex;
     handleRetAttrs(attrlist.getAttributes(ridx), attrs);
@@ -1512,49 +1599,13 @@ public:
       }
     }
 
-    // BB -> BB edge
-    set<pair<llvm::BasicBlock*, llvm::BasicBlock*>> split_edges;
-    for (auto &[phi, i] : todo_phis) {
-      for (unsigned idx = 0, e = i->getNumIncomingValues(); idx != e; ++idx) {
-        if (has_constant_expr(i->getIncomingValue(idx))) {
-          split_edges.emplace(i->getParent(), i->getIncomingBlock(idx));
-          break;
-        }
-      }
-    }
-
-    auto predecessor = [&](llvm::PHINode *phi, unsigned idx) {
-      auto pred = phi->getIncomingBlock(idx);
-      auto name = value_name(*pred);
-      if (!split_edges.count({phi->getParent(), pred}))
-        return name;
-      return std::move(name) + "_" +  getBB(phi->getParent()).getName();
-    };
-
     // patch phi nodes for recursive defs
     for (auto &[phi, i] : todo_phis) {
+      insert_constexpr_before = phi;
+      BB = const_cast<BasicBlock*>(&Fn.bbOf(*phi));
       for (unsigned idx = 0, e = i->getNumIncomingValues(); idx != e; ++idx) {
-        // evaluation of constexprs in phi nodes is done "in the edge", thus we
-        // introduce a new BB even if not always needed.
-        auto val = i->getIncomingValue(idx);
-        if (has_constant_expr(val)) {
-          auto bridge  = predecessor(i, idx);
-          auto &pred   = getBB(i->getIncomingBlock(idx));
-          BB = &Fn.insertBBAfter(bridge, pred);
-
-          auto &phi_bb = getBB(i->getParent());
-          pred.replaceTargetWith(&phi_bb, BB);
-          if (auto op = get_operand(val)) {
-            phi->addValue(*op, std::move(bridge));
-            BB->addInstr(make_unique<Branch>(phi_bb));
-            continue;
-          }
-          error(*i);
-          return {};
-        }
-
-        if (auto op = get_operand(val)) {
-          phi->addValue(*op, predecessor(i, idx));
+        if (auto op = get_operand(i->getIncomingValue(idx))) {
+          phi->addValue(*op, value_name(*i->getIncomingBlock(idx)));
         } else {
           error(*i);
           return {};
@@ -1588,16 +1639,12 @@ public:
     // If there is a global variable with initializer, put them at init block.
     auto &entry_name = Fn.getFirstBB().getName();
     BB = &Fn.getBB("#init", true);
+    insert_constexpr_before = nullptr;
 
+    // Ensure all src globals exist in target as well
     for (auto &gvname : gvnamesInSrc) {
-      auto gv = getGlobalVariable(string(gvname));
-      if (!gv) {
-        // global variable removed or renamed
-        *out << "ERROR: Unsupported interprocedural transformation\n";
-        return {};
-      }
-      // If gvname already exists in tgt, get_operand will immediately return
-      get_operand(gv);
+      if (auto gv = getGlobalVariable(string(gvname)))
+        get_operand(gv);
     }
 
     map<string, unique_ptr<Store>> stores;
@@ -1631,7 +1678,7 @@ public:
     else
       BB->addInstr(make_unique<Branch>(Fn.getBB(entry_name)));
 
-    return std::move(Fn);
+    return Fn;
   }
 };
 }

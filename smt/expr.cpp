@@ -1487,6 +1487,14 @@ expr expr::operator||(const expr &rhs) const {
       (rhs.isNot(n) && eq(n)))
     return true;
 
+  // (a & b) | (!a & b) -> b
+  expr a, b, c, d;
+  if (isAnd(a, b) && rhs.isAnd(c, d) && b.eq(d)) {
+    if ((a.isNot(n) && n.eq(c)) ||
+        (c.isNot(n) && n.eq(a)))
+      return b;
+  }
+
   C(rhs);
   Z3_ast args[] = { ast(), rhs() };
   return Z3_mk_or(ctx(), 2, args);
@@ -1898,7 +1906,7 @@ expr expr::load(const expr &idx) const {
              Z3_is_lambda(ctx(), ast())) {
     assert(Z3_get_quantifier_num_bound(ctx(), ast()) == 1);
     expr body = Z3_get_quantifier_body(ctx(), ast());
-    return body.subst({ idx });
+    return body.subst({ idx }).foldTopLevel();
   }
 
   return Z3_mk_select(ctx(), ast(), idx());
@@ -1933,6 +1941,11 @@ expr expr::mkIf(const expr &cond, const expr &then, const expr &els) {
     if (rhs.isOne())
       return lhs;
   }
+
+  // (ite c a (ite c2 a b)) -> (ite (or c c2) a b)
+  expr cond2, then2, else2;
+  if (els.isIf(cond2, then2, else2) && then.eq(then2))
+    return mkIf(cond || cond2, then, else2);
 
   return Z3_mk_ite(ctx(), cond(), then(), els());
 }
@@ -1974,6 +1987,28 @@ expr expr::simplify() const {
 expr expr::simplifyNoTimeout() const {
   C();
   return Z3_simplify_ex(ctx(), ast(), ctx.getNoTimeoutParam());
+}
+
+expr expr::foldTopLevel() const {
+  expr cond, then, els;
+  if (isIf(cond, then, els))
+    return
+      expr::mkIf(cond.foldTopLevel(), then.foldTopLevel(), els.foldTopLevel());
+
+  expr array, idx;
+  if (isLoad(array, idx) && idx.isConst())
+    return array.load(idx);
+
+  if (isApp()) {
+    bool is_const = true;
+    for (unsigned i = 0, e = getFnNumArgs(); i < e; ++i) {
+      if (!(is_const &= getFnArg(i).isConst()))
+        break;
+    }
+    if (is_const)
+      return simplifyNoTimeout();
+  }
+  return *this;
 }
 
 expr expr::subst(const vector<pair<expr, expr>> &repls) const {
@@ -2085,10 +2120,14 @@ set<expr> expr::leafs(unsigned max) const {
     if (!seen.emplace(val()).second)
       continue;
 
-    expr cond, then, els;
+    expr cond, then, els, e;
+    unsigned high, low;
     if (val.isIf(cond, then, els)) {
       worklist.emplace_back(std::move(then));
       worklist.emplace_back(std::move(els));
+    } else if (val.isExtract(e, high, low) && e.isIf(cond, then, els)) {
+      worklist.emplace_back(then.extract(high, low));
+      worklist.emplace_back(els.extract(high, low));
     } else {
       ret.emplace(std::move(val));
     }
@@ -2130,6 +2169,12 @@ string expr::fn_name() const {
   if (isApp())
     return Z3_get_symbol_string(ctx(), Z3_get_decl_name(ctx(), decl()));
   return "";
+}
+
+unsigned expr::getFnNumArgs() const {
+  auto app = isApp();
+  assert(app);
+  return Z3_get_app_num_args(ctx(), app);
 }
 
 expr expr::getFnArg(unsigned i) const {

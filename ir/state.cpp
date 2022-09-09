@@ -150,9 +150,11 @@ void State::resetGlobals() {
 
 const State::ValTy& State::exec(const Value &v) {
   assert(undef_vars.empty());
+  domain.noreturn = true;
   auto val = v.toSMT(*this);
   ENSURE(values_map.try_emplace(&v, (unsigned)values.size()).second);
-  values.emplace_back(&v, ValTy{std::move(val), domain.UB(), std::move(undef_vars)});
+  values.emplace_back(&v, ValTy{std::move(val), domain.noreturn, domain.UB(),
+                                std::move(undef_vars)});
   analysis.unused_vars.insert(&v);
 
   // cleanup potentially used temporary values due to undef rewriting
@@ -378,15 +380,14 @@ expr State::strip_undef_and_add_ub(const Value &val, const expr &e) {
   return e;
 }
 
-StateValue* State::no_more_tmp_slots() {
-  if (i_tmp_values < tmp_values.size())
-    return nullptr;
-  throw AliveException("Too many temporaries", false);
+void State::check_enough_tmp_slots() {
+  if (i_tmp_values >= tmp_values.size())
+    throw AliveException("Too many temporaries", false);
 }
 
 const StateValue& State::operator[](const Value &val) {
   auto &[var, val_uvars] = values[values_map.at(&val)];
-  auto &[sval, _ub, uvars] = val_uvars;
+  auto &[sval, _retdom, _ub, uvars] = val_uvars;
 
   auto undef_itr = analysis.non_undef_vals.find(&val);
   bool is_non_undef = undef_itr != analysis.non_undef_vals.end();
@@ -397,9 +398,7 @@ const StateValue& State::operator[](const Value &val) {
       return sv0;
 
     if (use_new_slot) {
-      if (auto ret = no_more_tmp_slots())
-        return *ret;
-      assert(i_tmp_values < tmp_values.size());
+      check_enough_tmp_slots();
       tmp_values[i_tmp_values++] = sv0;
     }
     assert(i_tmp_values > 0);
@@ -440,17 +439,15 @@ const StateValue& State::operator[](const Value &val) {
   auto sval_new = sval.subst(repls);
   if (sval_new.eq(sval)) {
     uvars.clear();
-    return sval;
+    return simplify(sval, true);
   }
 
   for (auto &p : repls) {
     undef_vars.emplace(std::move(p.second));
   }
 
-  if (auto ret = no_more_tmp_slots())
-    return *ret;
+  check_enough_tmp_slots();
 
-  assert(i_tmp_values < tmp_values.size());
   tmp_values[i_tmp_values++] = std::move(sval_new);
   return simplify(tmp_values[i_tmp_values - 1], false);
 }
@@ -526,10 +523,8 @@ State::getAndAddPoisonUB(const Value &val, bool undef_ub_too) {
     addUB(not_poison_except_padding(val.getType(), sv.non_poison));
   }
 
-  if (auto ret = no_more_tmp_slots())
-    return *ret;
+  check_enough_tmp_slots();
 
-  assert(i_tmp_values < tmp_values.size());
   return tmp_values[i_tmp_values++] = { std::move(v),
            sv.non_poison.isBool() ? true : expr::mkInt(-1, sv.non_poison) };
 }
@@ -580,6 +575,7 @@ bool State::startBB(const BasicBlock &bb) {
       analysis.meet_with(data.analysis);
     isFirst = false;
   }
+  assert(!isFirst);
 
   domain.path = path();
   domain.UB = *UB();
@@ -590,6 +586,7 @@ bool State::startBB(const BasicBlock &bb) {
 }
 
 void State::addJump(const BasicBlock &dst0, expr &&cond) {
+  cond &= domain.path;
   if (cond.isFalse())
     return;
 
@@ -598,7 +595,6 @@ void State::addJump(const BasicBlock &dst0, expr &&cond) {
     dst = &f.getSinkBB();
   }
 
-  cond &= domain.path;
   auto &data = predecessor_data[dst][current_bb];
   data.mem.add(memory, cond);
   data.UB.add(domain.UB(), cond);
@@ -661,6 +657,7 @@ void State::addUB(AndExpr &&ubs) {
 void State::addNoReturn(const expr &cond) {
   if (cond.isFalse())
     return;
+  domain.noreturn = !cond;
   return_memory.add(memory, domain.path && cond);
   function_domain.add(domain() && cond);
   return_undef_vars.insert(undef_vars.begin(), undef_vars.end());
@@ -717,17 +714,18 @@ expr State::FnCallInput::refinedBy(
   if (!inaccessiblememonly) {
     assert(args_ptr.size() == args_ptr2.size());
     for (unsigned i = 0, e = args_ptr.size(); i != e; ++i) {
-      // TODO: needs to take read/read2 as input to control if mem blocks
-      // need to be compared
-      auto &[ptr_in, byval, is_nocapture] = args_ptr[i];
-      auto &[ptr_in2, byval2, is_nocapture2] = args_ptr2[i];
-      if (byval != byval2 || is_nocapture != is_nocapture2)
+      auto &ptr1 = args_ptr[i];
+      auto &ptr2 = args_ptr2[i];
+      if (!ptr1.eq_attrs(ptr2))
         return false;
 
-      expr eq_val = Pointer(m, ptr_in.value)
-                      .fninputRefined(Pointer(m2, ptr_in2.value),
-                                      undef_vars, byval2);
-      refines.add(ptr_in.non_poison.implies(eq_val && ptr_in2.non_poison));
+      if (ptr1.noread)
+        continue;
+
+      expr eq_val = Pointer(m, ptr1.val.value)
+                      .fninputRefined(Pointer(m2, ptr2.val.value),
+                                      undef_vars, ptr2.byval);
+      refines.add(ptr1.val.non_poison.implies(eq_val && ptr2.val.non_poison));
 
       if (!refines)
         return false;
@@ -743,9 +741,11 @@ expr State::FnCallInput::refinedBy(
     auto restrict_ptrs2 = argmemonly ? &args_ptr2 : nullptr;
     if (modifies_bid != -1u) {
       dummy1.emplace_back(
-        StateValue(Pointer(m, modifies_bid, false).release(), true), 0, false);
+        StateValue(Pointer(m, modifies_bid, false).release(), true), 0, false,
+        false, false);
       dummy2.emplace_back(
-        StateValue(Pointer(m2, modifies_bid, false).release(), true), 0, false);
+        StateValue(Pointer(m2, modifies_bid, false).release(), true), 0, false,
+        false, false);
       restrict_ptrs = &dummy1;
       restrict_ptrs2 = &dummy2;
     }
@@ -812,8 +812,8 @@ State::addFnCall(const string &name, vector<StateValue> &&inputs,
 
   if (writes_memory) {
     for (auto &v : ptr_inputs) {
-      if (!v.byval && !v.nocapture && !v.val.non_poison.isFalse())
-        memory.escapeLocalPtr(v.val.value);
+      if (!v.byval && !v.nocapture)
+        memory.escapeLocalPtr(v.val.value, v.val.non_poison);
     }
   }
 
@@ -991,6 +991,14 @@ void State::finishInitializer() {
   is_initialization_phase = false;
 }
 
+void State::saveReturnedInput() {
+  assert(isSource());
+  if (auto *ret = getFn().getReturnedInput()) {
+    returned_input = (*this)[*ret];
+    resetUndefVars();
+  }
+}
+
 expr State::sinkDomain() const {
   auto I = predecessor_data.find(&f.getSinkBB());
   if (I == predecessor_data.end())
@@ -1040,6 +1048,8 @@ void State::syncSEdataWithSrc(const State &src) {
   glbvar_bids = src.glbvar_bids;
   for (auto &itm : glbvar_bids)
     itm.second.second = false;
+
+  returned_input = src.returned_input;
 
   fn_call_data = src.fn_call_data;
   inaccessiblemem_bids = src.inaccessiblemem_bids;

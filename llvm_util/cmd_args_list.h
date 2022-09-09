@@ -128,7 +128,12 @@ llvm::cl::opt<string> opt_report_dir(LLVM_ARGS_PREFIX "report-dir",
   llvm::cl::cat(alive_cmdargs));
 
 bool report_dir_created = false;
-string report_filename;
+fs::path report_filename;
+
+llvm::cl::opt<bool> opt_save_ir(LLVM_ARGS_PREFIX "save-ir",
+  llvm::cl::desc("Save LLVM IR into the report directory upon encountering a "
+                 "verification error"),
+  llvm::cl::init(false), llvm::cl::cat(alive_cmdargs));
 
 llvm::cl::opt<bool> opt_overwrite_reports(LLVM_ARGS_PREFIX "overwrite-reports",
   llvm::cl::desc("Overwrite existing report files"),
@@ -142,7 +147,13 @@ llvm::cl::opt<unsigned> opt_max_offset_in_bits(
   llvm::cl::cat(alive_cmdargs));
 
 llvm::cl::opt<bool> opt_optimize_ir("optimize-ir",
-  llvm::cl::desc("Optimize Alive2 IR"), llvm::cl::init(true),
+  llvm::cl::desc("Optimize Alive2 IR"), llvm::cl::init(true), llvm::cl::cat(alive_cmdargs));
+
+llvm::cl::opt<unsigned> opt_max_sizet_in_bits(
+  LLVM_ARGS_PREFIX "max-sizet-in-bits", llvm::cl::init(64),
+  llvm::cl::desc("Upper bound for the size of size_t. "
+                 "Note that this may impact correctness if the required "
+                 "address space size exceeds the specified limit."),
   llvm::cl::cat(alive_cmdargs));
 
 }

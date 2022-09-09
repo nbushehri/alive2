@@ -50,7 +50,7 @@ public:
   JumpInstr::it_helper targets() const;
   void replaceTargetWith(const BasicBlock *from, const BasicBlock *to);
 
-  std::unique_ptr<BasicBlock> dup(const std::string &suffix) const;
+  std::unique_ptr<BasicBlock> dup(Function &f, const std::string &suffix) const;
   void rauw(const Value &what, Value &with);
 
   friend std::ostream& operator<<(std::ostream &os, const BasicBlock &bb);
@@ -136,6 +136,8 @@ public:
   void addAggregate(std::unique_ptr<AggregateValue> &&a);
 
   void addInput(std::unique_ptr<Value> &&c);
+  void addInputAt(std::unique_ptr<Value> &&c, unsigned idx);
+  Value &getInput(int idx) { return *inputs[idx]; }
   util::const_strip_unique_ptr<decltype(inputs)> getInputs() const {
     return inputs;
   }
