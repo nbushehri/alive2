@@ -112,3 +112,5 @@ Please contact us or submit a PR if something is missing or inaccurate.
 15. Funnel shift related miscompile by ARM64 backend with global isel (https://github.com/llvm/llvm-project/issues/56664)
 16. Possible miscompile of signext-of-i1 by aarch64 backend (https://github.com/llvm/llvm-project/issues/57181)
 17. GlobalIsel backend miscompiles funnel shift with undef amount (https://github.com/llvm/llvm-project/issues/57256)
+18. Miscompile of code involving a usub.sat by AArch64 backend (https://github.com/llvm/llvm-project/issues/58109)
+19. Miscompilation of a frozen poison by AArch64 backend (https://github.com/llvm/llvm-project/issues/58321)
