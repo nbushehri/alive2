@@ -125,9 +125,9 @@ add_library(tools STATIC ${TOOLS_SRCS})
 
 set(UTIL_SRCS
   "${PROJECT_BINARY_DIR}/version_gen.h"
-  util/version.cpp
   util/compiler.cpp
   util/config.cpp
+  util/crc.cpp
   util/errors.cpp
   util/file.cpp
   util/parallel.cpp
@@ -139,7 +139,7 @@ set(UTIL_SRCS
   util/stopwatch.cpp
   util/symexec.cpp
   util/unionfind.cpp
-  #util/concreteval.cpp
+  util/version.cpp
 )
 
 set(UTIL_EXEC_SRCS
@@ -156,10 +156,8 @@ set(UTIL_EXEC_SRCS
   util/random.cpp
   util/sort.cpp
   util/stopwatch.cpp
-  #util/exec.cpp
   util/unionfind.cpp
-  #util/concreteval.cpp
-  #util/interp.cpp
+  util/version.cpp
 )
 
 add_library(util STATIC ${UTIL_SRCS})
@@ -170,6 +168,20 @@ add_dependencies(util_exec generate_version)
 
 set(ALIVE_LIBS ir smt tools util)
 set(ALIVE_EXEC_LIBS ir smt tools util_exec)
+
+find_package(hiredis)
+if (HIREDIS_LIBRARIES)
+  include_directories(${HIREDIS_INCLUDE_DIR})
+
+  set(CACHE_SRCS
+    cache/cache.cpp
+  )
+  add_library(cache STATIC ${CACHE_SRCS})
+  set(ALIVE_LIBS cache ${ALIVE_LIBS})
+else()
+  set(HIREDIS_LIBRARIES $<0:''>)
+  add_compile_definitions(NO_REDIS_SUPPORT)
+endif()
 
 
 if (BUILD_LLVM_UTILS OR BUILD_TV)
@@ -264,30 +276,13 @@ add_executable(alive-jobserver
 
 if (BUILD_LLVM_UTILS OR BUILD_TV)
   llvm_map_components_to_libnames(llvm_libs support core irreader analysis passes transformutils asmparser asmprinter target mc mcparser mcdisassembler aarch64asmparser aarch64codegen aarch64desc aarch64disassembler aarch64info aarch64utils)
-  target_link_libraries(alive PRIVATE ${llvm_libs})
   #target_link_libraries(alive2 PRIVATE ${llvm_libs})
-  target_link_libraries(alive-tv PRIVATE ${ALIVE_LIBS_LLVM} ${llvm_libs})
-  target_link_libraries(alive-exec PRIVATE ${ALIVE_LIBS_LLVM} ${llvm_libs})
-  #target_link_libraries(alive-exec-concrete PRIVATE ${ALIVE_EXEC_LIBS_LLVM} ${llvm_libs})
-  #target_link_libraries(alive-interp PRIVATE ${ALIVE_EXEC_LIBS_LLVM} ${llvm_libs})
+  target_link_libraries(alive-tv PRIVATE ${ALIVE_LIBS_LLVM} ${Z3_LIBRARIES} ${HIREDIS_LIBRARIES} ${llvm_libs})
+  target_link_libraries(alive-exec PRIVATE ${ALIVE_LIBS_LLVM} ${Z3_LIBRARIES} ${HIREDIS_LIBRARIES} ${llvm_libs})
 endif()
 
-if (CYGWIN)
-  # cmake on cygwin doesn't seem to know about dlls..
-  get_filename_component(Z3_LIB_DIR "${Z3_LIBRARIES}" DIRECTORY)
-  set(CMAKE_EXE_LINKER_FLAGS "-L${Z3_LIB_DIR} -lz3")
-  set(CMAKE_SHARED_LINKER_FLAGS "-L${Z3_LIB_DIR} -lz3")
-  file(COPY "${Z3_LIBRARIES}" DESTINATION "${PROJECT_BINARY_DIR}")
-else()
-  target_link_libraries(alive PRIVATE ${Z3_LIBRARIES})
-  #target_link_libraries(alive2 PRIVATE ${Z3_LIBRARIES})
-  if (BUILD_LLVM_UTILS OR BUILD_TV)
-    target_link_libraries(alive-tv PRIVATE ${Z3_LIBRARIES})
-    target_link_libraries(alive-exec PRIVATE ${Z3_LIBRARIES})
-    #target_link_libraries(alive-exec-concrete PRIVATE ${Z3_LIBRARIES})
-    #target_link_libraries(alive-interp PRIVATE ${Z3_LIBRARIES})
-  endif()
-endif()
+target_link_libraries(alive PRIVATE ${Z3_LIBRARIES} ${HIREDIS_LIBRARIES})
+#target_link_libraries(alive2 PRIVATE ${Z3_LIBRARIES} ${HIREDIS_LIBRARIES})
 
 if (NOT DEFINED TEST_NTHREADS)
   ProcessorCount(TEST_NTHREADS)

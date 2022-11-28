@@ -2,6 +2,7 @@
 // Distributed under the MIT license that can be found in the LICENSE file.
 
 #include "llvm/MC/MCAsmInfo.h" // include first to avoid ambiguity for comparison operator from util/spaceship.h
+#include "cache/cache.h"
 #include "ir/instr.h"
 #include "ir/type.h"
 #include "llvm_util/llvm2alive.h"
@@ -146,6 +147,7 @@ std::unique_ptr<llvm::Module> openInputFile(llvm::LLVMContext &Context,
 }
 
 optional<smt::smt_initializer> smt_init;
+unique_ptr<Cache> cache;
 
 struct Results {
   Transform t;
@@ -193,6 +195,9 @@ set<int> s_flag = {
     AArch64::ANDSXri,
     AArch64::ANDSXrr,
     AArch64::ANDSXrs,
+    // BICS
+    AArch64::BICSWrs,
+    AArch64::BICSXrs,
 };
 
 set<int> instrs_32 = {
@@ -207,8 +212,8 @@ set<int> instrs_32 = {
     AArch64::UBFMWri, AArch64::BFMWri,   AArch64::ORRWrs,   AArch64::ORRWri,
     AArch64::SDIVWr,  AArch64::UDIVWr,   AArch64::EXTRWrri, AArch64::EORWrs,
     AArch64::RORVWr,  AArch64::RBITWr,   AArch64::CLZWr,    AArch64::REVWr,
-    AArch64::CSNEGWr, AArch64::BICWrs,   AArch64::EONWrs,   AArch64::REV16Wr,
-    AArch64::Bcc,     AArch64::CCMPWr,   AArch64::CCMPWi};
+    AArch64::CSNEGWr, AArch64::BICWrs,   AArch64::BICSWrs,  AArch64::EONWrs,
+    AArch64::REV16Wr, AArch64::Bcc,      AArch64::CCMPWr,   AArch64::CCMPWi};
 
 set<int> instrs_64 = {
     AArch64::ADDXrx,    AArch64::ADDSXrs,   AArch64::ADDSXri,
@@ -227,13 +232,13 @@ set<int> instrs_64 = {
     AArch64::EORXrs,    AArch64::SMADDLrrr, AArch64::UMADDLrrr,
     AArch64::RORVXr,    AArch64::RBITXr,    AArch64::CLZXr,
     AArch64::REVXr,     AArch64::CSNEGXr,   AArch64::BICXrs,
-    AArch64::EONXrs,    AArch64::SMULHrr,   AArch64::UMULHrr,
-    AArch64::REV32Xr,   AArch64::REV16Xr,   AArch64::SMSUBLrrr,
-    AArch64::UMSUBLrrr, AArch64::PHI,       AArch64::TBZW,
-    AArch64::TBZX,      AArch64::TBNZW,     AArch64::TBNZX,
-    AArch64::B,         AArch64::CBZW,      AArch64::CBZX,
-    AArch64::CBNZW,     AArch64::CBNZX,     AArch64::CCMPXr,
-    AArch64::CCMPXi,    AArch64::BRK};
+    AArch64::BICSXrs,   AArch64::EONXrs,    AArch64::SMULHrr,
+    AArch64::UMULHrr,   AArch64::REV32Xr,   AArch64::REV16Xr,
+    AArch64::SMSUBLrrr, AArch64::UMSUBLrrr, AArch64::PHI,
+    AArch64::TBZW,      AArch64::TBZX,      AArch64::TBNZW,
+    AArch64::TBNZX,     AArch64::B,         AArch64::CBZW,
+    AArch64::CBZX,      AArch64::CBNZW,     AArch64::CBNZX,
+    AArch64::CCMPXr,    AArch64::CCMPXi,    AArch64::BRK};
 
 set<int> instrs_no_write = {AArch64::Bcc,    AArch64::B,      AArch64::TBZW,
                             AArch64::TBZX,   AArch64::TBNZW,  AArch64::TBNZX,
@@ -248,12 +253,12 @@ bool has_s(int instr) {
 Results verify(llvm::Function &F1, llvm::Function &F2,
                llvm::TargetLibraryInfoWrapperPass &TLI,
                bool print_transform = false, bool always_verify = false) {
-  auto fn1 = llvm2alive(F1, TLI.getTLI(F1));
+  auto fn1 = llvm2alive(F1, TLI.getTLI(F1), true);
   if (!fn1)
     return Results::Error("Could not translate '" + F1.getName().str() +
                           "' to Alive IR\n");
 
-  auto fn2 = llvm2alive(F2, TLI.getTLI(F2), fn1->getGlobalVarNames());
+  auto fn2 = llvm2alive(F2, TLI.getTLI(F2), false, fn1->getGlobalVarNames());
   if (!fn2)
     return Results::Error("Could not translate '" + F2.getName().str() +
                           "' to Alive IR\n");
@@ -266,7 +271,7 @@ Results verify(llvm::Function &F1, llvm::Function &F2,
     stringstream ss1, ss2;
     r.t.src.print(ss1);
     r.t.tgt.print(ss2);
-    if (ss1.str() == ss2.str()) {
+    if (std::move(ss1).str() == std::move(ss2).str()) {
       if (print_transform)
         r.t.print(*out, {});
       r.status = Results::SYNTACTIC_EQ;
@@ -603,6 +608,18 @@ public:
     }
   }
 };
+
+bool isIntegerRegister(const MCOperand &op) {
+  if (!op.isReg())
+    return false;
+
+  if ((AArch64::W0 <= op.getReg() && op.getReg() <= AArch64::W30) ||
+      (AArch64::X0 <= op.getReg() && op.getReg() <= AArch64::X28)) {
+    return true;
+  }
+
+  return false;
+}
 
 // Represents a machine function
 class MCFunction {
@@ -946,18 +963,28 @@ public:
   void rewriteOperands() {
 
     // FIXME: this lambda is pretty hacky and brittle
-    auto in_range_rewrite = [](MCOperand &op) {
+    auto in_range_rewrite = [&](MCOperand &op) {
       if (op.isReg()) {
         if (op.getReg() >= AArch64::W0 &&
             op.getReg() <= AArch64::W28) { // FIXME: Why 28?
           op.setReg(op.getReg() + AArch64::X0 - AArch64::W0);
         } else if (!(op.getReg() >= AArch64::X0 &&
                      op.getReg() <= AArch64::X28) &&
+                   // !(op.getReg() >= AArch64::D0 &&
+                   //   op.getReg() <= AArch64::D31) &&
                    !(op.getReg() <= AArch64::XZR &&
                      op.getReg() >= AArch64::WZR) &&
                    !(op.getReg() == AArch64::NoRegister) &&
                    !(op.getReg() == AArch64::LR)) {
-          report_fatal_error("Unsupported registers detected in the Assembly");
+          // temporarily fix to print the name of unsupported register when
+          // encountered
+          std::string buff;
+          raw_string_ostream str_stream(buff);
+          op.print(str_stream, MRI_ptr);
+          std::stringstream error_msg;
+          error_msg << "Unsupported registers detected in the Assembly: "
+                    << str_stream.str();
+          report_fatal_error(error_msg.str().c_str());
         }
       }
     };
@@ -1137,6 +1164,26 @@ public:
       stack[arg] = std::vector<unsigned>();
       pushFresh(arg);
     }
+
+    cout << "adding volatile registers\n";
+
+    for (unsigned int i = AArch64::X0; i <= AArch64::X17; i++) {
+      bool found_reg = false;
+      for (const auto &arg : fn_args) {
+        if (arg.getReg() == i) {
+          found_reg = true;
+          break;
+        }
+      }
+
+      if (!found_reg) {
+        cout << "adding volatile: " << i << "\n";
+        auto vol_reg = MCOperand::createReg(i);
+        stack[vol_reg] = std::vector<unsigned>();
+        pushFresh(vol_reg);
+      }
+    }
+
     rename(entry_block_ptr);
     cout << "printing MCInsts after renaming operands\n";
     printBlocks();
@@ -1247,7 +1294,7 @@ public:
 };
 
 // Some variables that we need to maintain as we're performing arm-tv
-static std::map<std::pair<unsigned, unsigned>, IR::Value *> cache;
+static std::map<std::pair<unsigned, unsigned>, IR::Value *> mc_cache;
 static std::unordered_map<MCOperand, unique_ptr<IR::StructType>, MCOperandHash,
                           MCOperandEqual>
     overflow_aggregate_types;
@@ -1313,11 +1360,11 @@ static IR::Type *sadd_overflow_type(MCOperand op, int size) {
 
 // Add IR value to cache
 void mc_add_identifier(unsigned reg, unsigned version, IR::Value &v) {
-  cache.emplace(std::make_pair(reg, version), &v);
+  mc_cache.emplace(std::make_pair(reg, version), &v);
 }
 
 IR::Value *mc_get_operand(unsigned reg, unsigned version) {
-  if (auto I = cache.find(std::make_pair(reg, version)); I != cache.end())
+  if (auto I = mc_cache.find(std::make_pair(reg, version)); I != mc_cache.end())
     return I->second;
   return nullptr;
 }
@@ -2840,7 +2887,9 @@ public:
     case AArch64::EONWrs:
     case AArch64::EONXrs:
     case AArch64::BICWrs:
-    case AArch64::BICXrs: {
+    case AArch64::BICXrs:
+    case AArch64::BICSWrs:
+    case AArch64::BICSXrs: {
       // BIC:
       // return = op1 AND NOT (optional shift) op2
       // EON:
@@ -2865,7 +2914,9 @@ public:
       IR::BinOp::Op finalBinOp;
       switch (opcode) {
       case AArch64::BICWrs:
-      case AArch64::BICXrs: {
+      case AArch64::BICXrs:
+      case AArch64::BICSXrs:
+      case AArch64::BICSWrs: {
         finalBinOp = IR::BinOp::And;
         break;
       }
@@ -2878,6 +2929,17 @@ public:
 
       auto ret = add_instr<IR::BinOp>(*ty, next_name(), *op1, *inverted_op2,
                                       finalBinOp);
+
+      // FIXME: it might be better to have EON instruction separate since there
+      //    no "S" instructions for EON
+      if (has_s(opcode)) {
+        // set n/z, clear c/v
+        set_n(ret);
+        set_z(ret);
+        cur_cs[MCBB] = make_intconst(0, 1);
+        cur_vs[MCBB] = make_intconst(0, 1);
+      }
+
       store(*ret);
       break;
     }
@@ -3235,12 +3297,16 @@ public:
                                              *stored, IR::ConversionOp::Trunc);
         auto extended_type = &get_int_type(64);
         if (truncated_type->bits() == 1) {
-          cout << "encounterd 1 bit input\n";
-          stored = add_instr<IR::ConversionOp>(get_int_type(8),
-                                               next_name(operand.getReg(), 3),
-                                               *stored, IR::ConversionOp::ZExt);
+          // cout << "encountered 1 bit input\n";
+          // stored = add_instr<IR::ConversionOp>(get_int_type(8),
+          //                                      next_name(operand.getReg(),
+          //                                      3), *stored,
+          //                                      IR::ConversionOp::ZExt);
           stored = add_instr<IR::ConversionOp>(
-              *extended_type, next_name(operand.getReg(), 4), *stored, op);
+              get_int_type(32), next_name(operand.getReg(), 3), *stored, op);
+          stored = add_instr<IR::ConversionOp>(*extended_type,
+                                               next_name(operand.getReg(), 4),
+                                               *stored, IR::ConversionOp::ZExt);
         } else {
           if (truncated_type->bits() < 32) {
             stored = add_instr<IR::ConversionOp>(
@@ -3261,6 +3327,21 @@ public:
       Fn.addInput(move(val));
       argNum++;
     }
+
+    auto poison_val = make_unique<IR::PoisonValue>(get_int_type(64));
+    cout << "argNum = " << argNum << "\n";
+    // add remaining caller-saved registers
+    for (unsigned int i = AArch64::X0 + argNum; i <= AArch64::X17; i++) {
+      auto val =
+          add_instr<IR::BinOp>(get_int_type(64), next_name(i, 3), *poison_val,
+                               *make_intconst(0, 64), IR::BinOp::Or);
+      
+      auto val_frozen =
+          add_instr<IR::Freeze>(get_int_type(64), next_name(i, 4), *val);
+    
+      mc_add_identifier(i, 2, *val_frozen);
+    }
+    Fn.addConstant(std::move(poison_val));
 
     for (auto &[alive_bb, mc_bb] : sorted_bbs) {
       cout << "visitng bb: " << mc_bb->getName() << endl;
@@ -3968,7 +4049,7 @@ bool backendTV() {
       continue;
     if (!func_names.empty() && !func_names.count(F.getName().str()))
       continue;
-    AF = llvm2alive(F, TLI.getTLI(F));
+    AF = llvm2alive(F, TLI.getTLI(F), true);
     break;
   }
 

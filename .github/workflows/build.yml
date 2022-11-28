@@ -4,7 +4,7 @@ on: [push, pull_request]
 
 jobs:
   build:
-    name: ${{ matrix.os }} ${{ matrix.compiler }} ${{ matrix.build_type }}
+    name: ${{ matrix.os }} ${{ matrix.compiler }} ${{ matrix.build_type }} ${{ matrix.cache }}
     runs-on: ${{ matrix.os }}
 
     strategy:
@@ -12,6 +12,7 @@ jobs:
         os:         [ubuntu-22.04]
         compiler:   [g++-11, clang++-15, clang++-16]
         build_type: [Release, Debug]
+        cache:      ['', Redis]
         include:
           - os: macos-12
             compiler: clang++
@@ -42,11 +43,13 @@ jobs:
           if [[ ${{ matrix.compiler }} == "clang++-16" ]]; then
             sudo apt-get install clang++-16
           fi
+          if [[ "${{ matrix.cache }}" == "Redis" ]]; then
+            sudo apt-get install libhiredis-dev
+          fi
 
       - name: Install dependencies (MacOS)
         if: runner.os == 'macOS'
         run: |
-          sudo xcode-select -s /Applications/Xcode_14.0.app
           brew install z3 re2c ninja
 
       - name: Compile

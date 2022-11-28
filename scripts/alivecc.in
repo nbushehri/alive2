@@ -30,7 +30,27 @@ if ($0 =~ /alivecc$/) {
     die "Unexpected invocation as '$0'";
 }
 
+# there's a bug in LLVM's CloneModule that causes, over time, a severe
+# memory leak; we can work around it by dropping debug info, which
+# should never have any effect on translation validation
+my @keepers = grep(!/^\-g/, @ARGV);
+@ARGV = @keepers;
+
+my $print_cmd = 0;
+
 if (compiling()) {
+
+    if (getenv("ALIVECC_CACHE")) {
+        push @ARGV, ("-mllvm", "-tv-cache=true");
+    }
+
+    if (getenv("ALIVECC_CACHE_ALLOW_VERSION_MISMATCH")) {
+        push @ARGV, ("-mllvm", "-tv-cache-allow-version-mismatch=true");
+    }
+
+    if (getenv("ALIVECC_PRINT_COMMAND")) {
+        $print_cmd = 1;
+    }
 
     if (getenv("ALIVECC_QUIET")) {
         push @ARGV, ("-mllvm", "-tv-quiet");
@@ -95,6 +115,9 @@ if (compiling()) {
     # Alive2 doesn't yet understand TBAA info
     push @ARGV, "-fno-strict-aliasing";
 
+    # Alive2 doesn't support global analyses
+    push @ARGV, ("-mllvm", "-enable-global-analyses=0");
+
     my $TV_SHAREDLIB;
     if ($^O =~ /darwin*/) {
         # Mac
@@ -106,6 +129,13 @@ if (compiling()) {
 
     push @ARGV, "-fpass-plugin=@CMAKE_BINARY_DIR@/tv/${TV_SHAREDLIB}";
     push @ARGV, ("-Xclang", "-load", "-Xclang", "@CMAKE_BINARY_DIR@/tv/${TV_SHAREDLIB}");
+}
+
+if ($print_cmd) {
+    foreach my $arg (@ARGV) {
+        print "$arg ";
+    }
+    print "\n\n";
 }
 
 exec @ARGV;
