@@ -3501,7 +3501,7 @@ public:
           (argNum == new_input_idx_bitwidth[idx].first)) {
         IR::ConversionOp::Op op(IR::ConversionOp::ZExt);
 
-        if (input_ptr->getAttributes().has(IR::ParamAttrs::Sext)) {
+        if (input_ptr->getAttributes().has(IR::ParamAttrs::SignExt)) {
           op = IR::ConversionOp::SExt;
         }
 
@@ -4187,7 +4187,7 @@ void adjustSrcInputs(std::optional<IR::Function> &srcFn) {
         *new_inputs[i].get(), IR::ConversionOp::Trunc);
     srcFn->rauw(srcFn->getInput(new_input_idx_bitwidth[i].first), *new_ir);
     srcFn->getFirstBB().addInstr(std::move(new_ir), true);
-    srcFn->addInputAt(move(new_inputs[i]), new_input_idx_bitwidth[i].first);
+    srcFn->replaceInput(move(new_inputs[i]), new_input_idx_bitwidth[i].first);
   }
 
   // cout << "After adjusting inputs:\n";
@@ -4201,7 +4201,7 @@ void adjustSrcReturn(std::optional<IR::Function> &srcFn) {
   auto &ret_typ = srcFn->getType();
   auto &fnAttrs = srcFn->getFnAttrs();
 
-  if (!fnAttrs.has(IR::FnAttrs::Sext)) {
+  if (!fnAttrs.has(IR::FnAttrs::SignExt)) {
     return;
   }
 

@@ -59,15 +59,6 @@ void BasicBlock::delInstr(const Instr *i) {
   }
 }
 
-void BasicBlock::delInstr(const Instr *i) {
-  for (auto I = m_instrs.begin(), E = m_instrs.end(); I != E; ++I) {
-    if (I->get() == i) {
-      m_instrs.erase(I);
-      return;
-    }
-  }
-}
-
 vector<Phi*> BasicBlock::phis() const {
   vector<Phi*> phis;
   for (auto &i : m_instrs) {
