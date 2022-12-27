@@ -36,9 +36,9 @@ ostream& operator<<(ostream &os, const ParamAttrs &attr) {
     os << "noalias ";
   if (attr.has(ParamAttrs::DereferenceableOrNull))
     os << "dereferenceable_or_null(" << attr.derefOrNullBytes << ") ";
-  if (attr.has(ParamAttrs::Zext))
+  if (attr.has(ParamAttrs::ZeroExt))
     os << "zeroext ";
-  if (attr.has(ParamAttrs::Sext))
+  if (attr.has(ParamAttrs::SignExt))
     os << "signext ";
   if (attr.has(ParamAttrs::AllocPtr))
     os << "allocptr ";
@@ -91,9 +91,9 @@ ostream& operator<<(ostream &os, const FnAttrs &attr) {
     os << " dereferenceable_or_null(" << attr.derefOrNullBytes << ')';
   if (attr.has(FnAttrs::NullPointerIsValid))
     os << " null_pointer_is_valid";
-  if (attr.has(FnAttrs::Zext))
+  if (attr.has(FnAttrs::ZeroExt))
     os << " zeroext";
-  if (attr.has(FnAttrs::Sext))
+  if (attr.has(FnAttrs::SignExt))
     os << " signext";
   if (!attr.allocfamily.empty())
     os << " alloc-family(" << attr.allocfamily << ')';
@@ -510,12 +510,12 @@ ostream& operator<<(ostream &os, const FastMathFlags &fm) {
 smt::expr FpRoundingMode::toSMT() const {
   switch (mode) {
   case FpRoundingMode::Dynamic: UNREACHABLE();
+  case FpRoundingMode::Default:
   case FpRoundingMode::RNE:     return expr::rne();
   case FpRoundingMode::RNA:     return expr::rna();
   case FpRoundingMode::RTP:     return expr::rtp();
   case FpRoundingMode::RTN:     return expr::rtn();
   case FpRoundingMode::RTZ:     return expr::rtz();
-  case FpRoundingMode::Default: UNREACHABLE();
   }
   UNREACHABLE();
 }

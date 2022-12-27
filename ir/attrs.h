@@ -62,9 +62,9 @@ public:
   enum Attribute { None = 0, NonNull = 1<<0, ByVal = 1<<1, NoCapture = 1<<2,
                    NoRead = 1<<3, NoWrite = 1<<4, Dereferenceable = 1<<5,
                    NoUndef = 1<<6, Align = 1<<7, Returned = 1<<8,
-                   NoAlias = 1<<9, DereferenceableOrNull = 1<<10, 
+                   NoAlias = 1<<9, DereferenceableOrNull = 1<<10,
                    AllocPtr = 1<<11, AllocAlign = 1<<12,
-                   Zext = 1<<13, Sext = 1<<14};
+                   ZeroExt = 1<<13, SignExt = 1<<14};
 
   ParamAttrs(unsigned bits = None) : bits(bits) {}
 
@@ -125,8 +125,9 @@ public:
                    NoThrow = 1 << 7, NoAlias = 1 << 8, WillReturn = 1 << 9,
                    DereferenceableOrNull = 1 << 10,
                    NullPointerIsValid = 1 << 11,
-                   AllocSize = 1 << 12, Zext = 1<<13, 
-                   Sext = 1<<14 };
+                   AllocSize = 1 << 12, ZeroExt = 1<<13,
+                   SignExt = 1<<14 };
+
 
   FnAttrs(unsigned bits = None) : bits(bits) {}
 
@@ -208,6 +209,7 @@ struct FpExceptionMode final {
   FpExceptionMode() : mode(Ignore) {}
   FpExceptionMode(Mode mode) : mode(mode) {}
   Mode getMode() const { return mode; }
+  bool ignore() const { return mode == Ignore; }
   friend std::ostream& operator<<(std::ostream &os, FpExceptionMode ex);
 };
 

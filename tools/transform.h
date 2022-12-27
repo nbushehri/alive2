@@ -20,6 +20,7 @@ extern bool optimize_ir;
 
 struct TransformPrintOpts {
   bool print_fn_header = true;
+  bool skip_tgt = false;
 };
 
 
@@ -33,7 +34,7 @@ struct Transform {
   bool peep(IR::Function &fn);
   bool deadInstElim(IR::Function &fn);
   void preprocess();
-  void print(std::ostream &os, const TransformPrintOpts &opt) const;
+  void print(std::ostream &os, const TransformPrintOpts &opt = {}) const;
   friend std::ostream& operator<<(std::ostream &os, const Transform &t);
 };
 
