@@ -12,6 +12,8 @@
 #include <functional>
 #include <numeric>
 #include <sstream>
+#include <iostream>
+#include <variant>
 
 using namespace smt;
 using namespace util;
@@ -104,6 +106,14 @@ bool Instr::propagatesPoison() const {
   return false;
 }
 
+std::optional<IntConst> Instr::fold() const {
+  return {};
+}
+
+Value* Instr::peep() const {
+  return nullptr;
+}
+
 expr Instr::getTypeConstraints() const {
   UNREACHABLE();
   return {};
@@ -138,6 +148,96 @@ vector<Value*> BinOp::operands() const {
 
 bool BinOp::propagatesPoison() const {
   return true;
+}
+
+/*
+ * be super careful about poison!
+ */
+std::optional<IntConst> BinOp::fold() const {
+  IntConst *lhsConst = dynamic_cast<IntConst *>(lhs);
+  IntConst *rhsConst = dynamic_cast<IntConst *>(rhs);
+  if (!lhsConst || !rhsConst)
+    return {};
+  auto *lhsPtr = lhsConst->getInt();
+  auto *rhsPtr = rhsConst->getInt();
+  if (!lhsPtr || !rhsPtr)
+    return {};
+  uint64_t lhsVal = *lhsPtr;
+  uint64_t rhsVal = *rhsPtr;
+  uint64_t mask = (1UL << bits()) - 1;
+  switch (op) {
+  case Add: {
+    /*
+     * if we wanted to support these, we would need to do overflow
+     * checking here, but not worrying about this since the ARM lifter
+     * does not generate nsw or nuw
+     */
+    if ((flags & NSW) || (flags & NUW))
+      return {};
+    auto folded = lhsVal + rhsVal;
+    if (bits() < 64)
+      folded &= mask;
+    return IntConst(getType(), folded);
+  }
+  case And:
+    return IntConst(getType(), lhsVal & rhsVal);
+  case Or:
+    return IntConst(getType(), lhsVal | rhsVal);
+  case Shl:
+    if (rhsVal < bits() && !(flags & (NSW|NUW))) {
+      auto folded = lhsVal << rhsVal;
+      if (bits() < 64)
+        folded &= mask;
+      return IntConst(getType(), folded);
+    } else {
+      return {};
+    }
+  case LShr:
+    if (rhsVal < bits() && !(flags & (Exact|NSW|NUW))) {
+      auto folded = lhsVal >> rhsVal;
+      return IntConst(getType(), folded);
+    } else {
+      return {};
+    }
+  case AShr:
+    if (rhsVal < bits() && !(flags & (Exact|NSW|NUW))) {
+      // FIXME
+      return {};
+    } else {
+      return {};
+    }
+  default:
+    return {};
+  }
+}
+
+Value* BinOp::peep() const {
+  IntConst *lhsConst = dynamic_cast<IntConst *>(lhs);
+  IntConst *rhsConst = dynamic_cast<IntConst *>(rhs);
+  switch (op) {
+  case Shl:
+  case AShr:
+  case LShr:
+  case Sub:
+    if (rhsConst && *(rhsConst->getInt()) == 0)
+      return lhs;
+    return nullptr;
+  case And:
+    if (lhsConst && *(lhsConst->getInt()) == 0)
+      return lhs;
+    if (rhsConst && *(rhsConst->getInt()) == 0)
+      return rhs;
+    return nullptr;
+  case Or:
+  case Add:
+    if (lhsConst && *(lhsConst->getInt()) == 0)
+      return rhs;
+    if (rhsConst && *(rhsConst->getInt()) == 0)
+      return lhs;
+    return nullptr;
+  default:
+    return nullptr;
+  }
 }
 
 void BinOp::rauw(const Value &what, Value &with) {
@@ -584,7 +684,6 @@ bool BinOp::isDivOrRem() const {
     return false;
   }
 }
-
 
 vector<Value*> FpBinOp::operands() const {
   return { lhs, rhs };
@@ -1135,7 +1234,6 @@ unique_ptr<Instr> FpUnaryOp::dup(Function &f, const string &suffix) const {
     make_unique<FpUnaryOp>(getType(), getName() + suffix, *val, op, fmath, rm);
 }
 
-
 vector<Value*> UnaryReductionOp::operands() const {
   return { val };
 }
@@ -1403,7 +1501,6 @@ unique_ptr<Instr> FpTernaryOp::dup(Function &f, const string &suffix) const {
                                   fmath, rm);
 }
 
-
 vector<Value*> TestOp::operands() const {
   return { lhs, rhs };
 }
@@ -1494,7 +1591,6 @@ expr TestOp::getTypeConstraints(const Function &f) const {
 unique_ptr<Instr> TestOp::dup(Function &f, const string &suffix) const {
   return make_unique<TestOp>(getType(), getName() + suffix, *lhs, *rhs, op);
 }
-
 
 vector<Value*> ConversionOp::operands() const {
   return { val };
@@ -1817,7 +1913,6 @@ unique_ptr<Instr> FpConversionOp::dup(Function &f, const string &suffix) const {
     make_unique<FpConversionOp>(getType(), getName() + suffix, *val, op, rm);
 }
 
-
 vector<Value*> Select::operands() const {
   return { cond, a, b };
 }
@@ -1874,7 +1969,6 @@ expr Select::getTypeConstraints(const Function &f) const {
 unique_ptr<Instr> Select::dup(Function &f, const string &suffix) const {
   return make_unique<Select>(getType(), getName() + suffix, *cond, *a, *b);
 }
-
 
 void ExtractValue::addIdx(unsigned idx) {
   idxs.emplace_back(idx);
@@ -2559,7 +2653,6 @@ unique_ptr<Instr> ICmp::dup(Function &f, const string &suffix) const {
   return make_unique<ICmp>(getType(), getName() + suffix, cond, *a, *b);
 }
 
-
 vector<Value*> FCmp::operands() const {
   return { a, b };
 }
@@ -2645,7 +2738,6 @@ expr FCmp::getTypeConstraints(const Function &f) const {
 unique_ptr<Instr> FCmp::dup(Function &f, const string &suffix) const {
   return make_unique<FCmp>(getType(), getName() + suffix, cond, *a, *b, fmath);
 }
-
 
 vector<Value*> Freeze::operands() const {
   return { val };
@@ -4299,6 +4391,11 @@ const ConversionOp* isCast(ConversionOp::Op op, const Value &v) {
 }
 
 bool hasNoSideEffects(const Instr &i) {
+  if (auto *B = dynamic_cast<const BinOp*>(&i)) {
+    return
+      B->getOp() != BinOp::SDiv && B->getOp() != BinOp::UDiv &&
+      B->getOp() != BinOp::SRem && B->getOp() != BinOp::URem;
+  }
   return isNoOp(i) ||
          dynamic_cast<const ConversionOp*>(&i) ||
          dynamic_cast<const ExtractValue*>(&i) ||

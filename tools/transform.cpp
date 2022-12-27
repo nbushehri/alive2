@@ -1462,6 +1462,111 @@ static void optimize_ptrcmp(Function &f) {
   }
 }
 
+bool Transform::fold(IR::Function &fn) {
+  bool changed = false;
+ again:
+  for (auto bb : fn.getBBs()) {
+    for (auto &i1 : bb->instrs()) {
+      auto folded = i1.fold();
+      if (folded) {
+        auto newI = make_unique<IntConst>(*folded);
+        fn.rauw(i1, *newI);
+        fn.addConstant(std::move(newI));
+        bb->delInstr(&i1);
+        changed = true;
+        goto again;
+      }
+    }
+  }
+  return changed;
+}
+
+bool Transform::peep(IR::Function &fn) {
+  bool changed = false;
+ again:
+  for (auto bb : fn.getBBs()) {
+    for (auto &i1 : bb->instrs()) {
+      auto peeped = i1.peep();
+      if (peeped) {
+        fn.rauw(i1, *peeped);
+        bb->delInstr(&i1);
+        changed = true;
+        goto again;
+      }
+    }
+  }
+  return changed;
+}
+
+/*
+ * optimize redundant truncations of output of sext/zext instructions
+ *
+ * TODO: handle ext of trunc, ext of ext, and trunc of trunc
+ */
+bool Transform::cleanupTruncExt(IR::Function &fn) {
+  bool changed = false;
+  static long newCount = 0;
+
+ again:
+  for (auto bb : fn.getBBs()) {
+    for (auto &i : bb->instrs()) {
+      auto truncInst = dynamic_cast<const ConversionOp*>(&i);
+      if (truncInst == nullptr || truncInst->getOp() != ConversionOp::Trunc)
+	continue;
+      auto extInst = dynamic_cast<const ConversionOp*>(&truncInst->getValue());
+      if (extInst == nullptr || (extInst->getOp() != ConversionOp::SExt &&
+                                 extInst->getOp() != ConversionOp::ZExt))
+	continue;
+      if (!fn.hasOneUse(*extInst))
+        continue;
+      auto &input = extInst->getValue();
+      auto oldWidth = truncInst->getType().bits();
+      auto newWidth = input.getType().bits();
+      if (oldWidth == newWidth) {
+	fn.rauw(i, input);
+      } else {
+        auto newConv = make_unique<ConversionOp>(truncInst->getType(),
+                                                 "%newconv" + to_string(newCount++),
+                                                 input,
+                                                 (oldWidth > newWidth) ?
+                                                 extInst->getOp() :
+                                                 ConversionOp::Trunc);
+	fn.rauw(i, *newConv);
+        bb->addInstrAt(std::move(newConv), &i, true);
+      }
+      changed = true;
+      bb->delInstr(truncInst);
+      bb->delInstr(extInst);
+      goto again;
+    }
+  }
+
+  return changed;
+}
+
+// remove side-effect free instructions without users
+bool Transform::deadInstElim(IR::Function &fn) {
+  vector<Instr*> to_remove;
+  bool changed = false;
+  auto users = fn.getUsers();
+
+  for (auto bb : fn.getBBs()) {
+    for (auto &i : bb->instrs()) {
+      auto i_ptr = const_cast<Instr*>(&i);
+      if (hasNoSideEffects(i) && !users.count(i_ptr))
+	to_remove.emplace_back(i_ptr);
+    }
+
+    for (auto i : to_remove) {
+      bb->delInstr(i);
+      changed = true;
+    }
+    to_remove.clear();
+  }
+
+  return changed;
+}
+
 void Transform::preprocess() {
   remove_unreachable_bbs(src);
   remove_unreachable_bbs(tgt);
@@ -1491,33 +1596,25 @@ void Transform::preprocess() {
   optimize_ptrcmp(src);
   optimize_ptrcmp(tgt);
 
-  // remove side-effect free instructions without users
-  vector<Instr*> to_remove;
-  for (auto fn : { &src, &tgt }) {
-    bool changed;
-    do {
-      auto users = fn->getUsers();
-      changed = false;
-
-      for (auto bb : fn->getBBs()) {
-        for (auto &i : bb->instrs()) {
-          auto i_ptr = const_cast<Instr*>(&i);
-          if (hasNoSideEffects(i) && !users.count(i_ptr))
-            to_remove.emplace_back(i_ptr);
-        }
-
-        for (auto i : to_remove) {
-          bb->delInstr(i);
-          changed = true;
-        }
-        to_remove.clear();
+  bool changed;
+  do {
+    changed = false;
+    if (config::optimize_ir) {
+      // probably just leave this off once we're done testing
+      if (true) {
+        changed |= fold(src);
+        changed |= peep(src);
+        changed |= cleanupTruncExt(src);
       }
-
-      changed |=
-        fn->removeUnusedStuff(users, fn == &src ? vector<string_view>()
-                                                : src.getGlobalVarNames());
-    } while (changed);
-  }
+      changed |= fold(tgt);
+      changed |= peep(tgt);
+      changed |= cleanupTruncExt(tgt);
+    }
+    changed |= deadInstElim(src);
+    changed |= deadInstElim(tgt);
+    changed |= src.removeUnusedStuff(src.getUsers(), vector<string_view>());
+    changed |= tgt.removeUnusedStuff(tgt.getUsers(), src.getGlobalVarNames());
+  } while (changed);
 
   // bits_program_pointer is used by unroll. Initialize it in advance
   initBitsProgramPointer(*this);

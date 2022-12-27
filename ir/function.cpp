@@ -59,6 +59,15 @@ void BasicBlock::delInstr(const Instr *i) {
   }
 }
 
+void BasicBlock::delInstr(const Instr *i) {
+  for (auto I = m_instrs.begin(), E = m_instrs.end(); I != E; ++I) {
+    if (I->get() == i) {
+      m_instrs.erase(I);
+      return;
+    }
+  }
+}
+
 vector<Phi*> BasicBlock::phis() const {
   vector<Phi*> phis;
   for (auto &i : m_instrs) {
@@ -189,6 +198,27 @@ void Function::removeBB(BasicBlock &BB) {
   }
 }
 
+bool Function::hasOneUse(const Instr &target) {
+  long uses = 0;
+  for (auto *bb : getBBs()) {
+    for (auto &i : bb->instrs()) {
+      for (auto op : i.operands()) {
+        auto ip = dynamic_cast<Instr*>(op);
+        if (ip != nullptr && &target == ip)
+          uses++;
+      }
+    }
+  }
+  for (auto &agg : aggregates) {
+    for (auto val : agg->getVals()) {
+      auto ip = dynamic_cast<Instr*>(val);
+      if (ip != nullptr && &target == ip)
+        uses++;
+    }
+  }
+  return uses == 1;
+}
+
 void Function::addConstant(unique_ptr<Value> &&c) {
   constants.emplace_back(std::move(c));
 }
@@ -227,6 +257,7 @@ void Function::addInput(unique_ptr<Value> &&i) {
          dynamic_cast<ConstantInput*>(i.get()));
   inputs.emplace_back(std::move(i));
 }
+
 
 void Function::replaceInput(std::unique_ptr<Value> &&c, unsigned idx) {
   inputs[idx] = std::move(c);

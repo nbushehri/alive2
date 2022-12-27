@@ -118,6 +118,7 @@ class FnAttrs final {
   uint8_t allockind = 0;
 
 public:
+
   enum Attribute { None = 0, NNaN = 1 << 0, NoReturn = 1 << 1,
                    Dereferenceable = 1 << 2, NonNull = 1 << 3,
                    NoFree = 1 << 4, NoUndef = 1 << 5, Align = 1 << 6,
@@ -126,6 +127,7 @@ public:
                    NullPointerIsValid = 1 << 11,
                    AllocSize = 1 << 12, ZeroExt = 1<<13,
                    SignExt = 1<<14 };
+
 
   FnAttrs(unsigned bits = None) : bits(bits) {}
 
@@ -184,6 +186,8 @@ struct FastMathFlags final {
   unsigned flags = None;
 
   bool isNone() const { return flags == None; }
+  bool isNNan() const { return flags & NNaN; }
+  bool isNInf() const {return flags & NInf;}
   friend std::ostream& operator<<(std::ostream &os, const FastMathFlags &fm);
 };
 

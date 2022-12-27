@@ -1304,7 +1304,7 @@ public:
       case llvm::Attribute::ZExt:
         attrs.set(ParamAttrs::ZeroExt);
         break;
-
+      
       case llvm::Attribute::ByVal: {
         attrs.set(ParamAttrs::ByVal);
         auto ty = aset.getByValType();

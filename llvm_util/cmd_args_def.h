@@ -8,6 +8,7 @@ config::tgt_unroll_cnt = opt_tgt_unrolling_factor;
 config::src_unroll_cnt = opt_unrolling_factor;
 config::src_unroll_cnt = opt_unrolling_factor;
 #endif
+config::optimize_ir = opt_optimize_ir;
 config::disable_undef_input = opt_disable_undef;
 config::disable_poison_input = opt_disable_poison;
 config::symexec_print_each_value = opt_se_verbose;

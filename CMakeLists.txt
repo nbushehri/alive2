@@ -142,10 +142,32 @@ set(UTIL_SRCS
   util/version.cpp
 )
 
+set(UTIL_EXEC_SRCS
+  "${PROJECT_BINARY_DIR}/version_gen.h"
+  util/version.cpp
+  util/compiler.cpp
+  util/config.cpp
+  util/errors.cpp
+  util/file.cpp
+  util/parallel.cpp
+  util/parallel_fifo.cpp
+  util/parallel_null.cpp
+  util/parallel_unrestricted.cpp
+  util/random.cpp
+  util/sort.cpp
+  util/stopwatch.cpp
+  util/unionfind.cpp
+  util/version.cpp
+)
+
 add_library(util STATIC ${UTIL_SRCS})
 add_dependencies(util generate_version)
 
+add_library(util_exec STATIC ${UTIL_EXEC_SRCS})
+add_dependencies(util_exec generate_version)
+
 set(ALIVE_LIBS ir smt tools util)
+set(ALIVE_EXEC_LIBS ir smt tools util_exec)
 
 find_package(hiredis)
 if (HIREDIS_LIBRARIES)
@@ -180,6 +202,9 @@ if (BUILD_LLVM_UTILS OR BUILD_TV)
   include(AddLLVM)
 
   include_directories(${LLVM_INCLUDE_DIRS})
+  include_directories(${LLVM_BINARY_DIR}/lib)
+
+
   add_definitions(${LLVM_DEFINITIONS})
 
   set(LLVM_UTIL_SRCS
@@ -191,6 +216,7 @@ if (BUILD_LLVM_UTILS OR BUILD_TV)
 
   add_library(llvm_util STATIC ${LLVM_UTIL_SRCS})
   set(ALIVE_LIBS_LLVM llvm_util ${ALIVE_LIBS})
+  set(ALIVE_EXEC_LIBS_LLVM llvm_util ${ALIVE_EXEC_LIBS})
 
   set(LLVM_LINK_COMPONENTS ${LLVM_LINK_COMPONENTS} TargetParser)
 
@@ -201,6 +227,14 @@ if (BUILD_LLVM_UTILS OR BUILD_TV)
   add_llvm_executable(alive-exec
     "tools/alive-exec.cpp"
   )
+
+  #add_llvm_executable(alive-exec-concrete
+  #  "tools/alive-exec-concrete.cpp"
+  #)
+
+  #add_llvm_executable(alive-interp
+  #  "tools/alive-interp.cpp"
+  #)
 
 else()
   set(LLVM_UTIL_SRCS "")
@@ -243,8 +277,8 @@ add_executable(alive-jobserver
 #add_library(alive2 SHARED ${IR_SRCS} ${SMT_SRCS} ${TOOLS_SRCS} ${UTIL_SRCS} ${LLVM_UTIL_SRCS})
 
 if (BUILD_LLVM_UTILS OR BUILD_TV)
-  llvm_map_components_to_libnames(llvm_libs support core irreader analysis passes transformutils)
-#  target_link_libraries(alive2 PRIVATE ${llvm_libs})
+  llvm_map_components_to_libnames(llvm_libs support core irreader analysis passes transformutils asmparser asmprinter target mc mcparser mcdisassembler aarch64asmparser aarch64codegen aarch64desc aarch64disassembler aarch64info aarch64utils)
+  #target_link_libraries(alive2 PRIVATE ${llvm_libs})
   target_link_libraries(alive-tv PRIVATE ${ALIVE_LIBS_LLVM} ${Z3_LIBRARIES} ${HIREDIS_LIBRARIES} ${llvm_libs})
   target_link_libraries(alive-exec PRIVATE ${ALIVE_LIBS_LLVM} ${Z3_LIBRARIES} ${HIREDIS_LIBRARIES} ${llvm_libs})
 endif()

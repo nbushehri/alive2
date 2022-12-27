@@ -25,6 +25,8 @@ extern unsigned src_unroll_cnt;
 
 extern unsigned tgt_unroll_cnt;
 
+extern bool optimize_ir;
+
 // The maximum number of bits to use for offset computations. Note that this may
 // impact correctness, if values involved in offset computations exceed the
 // maximum.

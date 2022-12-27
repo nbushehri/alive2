@@ -3,10 +3,13 @@
 // Copyright (c) 2018-present The Alive2 Authors.
 // Distributed under the MIT license that can be found in the LICENSE file.
 
+#include "ir/constant.h"
 #include "ir/value.h"
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
+
 
 namespace IR {
 
@@ -20,6 +23,8 @@ protected:
 public:
   virtual std::vector<Value*> operands() const = 0;
   virtual bool propagatesPoison() const;
+  virtual std::optional<IntConst> fold() const;
+  virtual Value* peep() const;
   smt::expr getTypeConstraints() const override;
   virtual smt::expr getTypeConstraints(const Function &f) const = 0;
   virtual std::unique_ptr<Instr> dup(Function &f,
@@ -49,12 +54,15 @@ public:
 
   std::vector<Value*> operands() const override;
   bool propagatesPoison() const override;
+  std::optional<IntConst> fold() const override;
+  Value *peep() const override;
   void rauw(const Value &what, Value &with) override;
   void print(std::ostream &os) const override;
   StateValue toSMT(State &s) const override;
   smt::expr getTypeConstraints(const Function &f) const override;
   std::unique_ptr<Instr>
     dup(Function &f, const std::string &suffix) const override;
+  Op getOp() const { return op; }
 };
 
 
@@ -505,6 +513,12 @@ public:
 
   auto& getTrue() const { return *dst_true; }
   auto getFalse() const { return dst_false; }
+
+  //adding these because the above naming is rather inconsistent 
+  //but I don't want to break their use by changing the return type
+  const BasicBlock* getTruePtr() const {return dst_true;}
+  const BasicBlock* getFalsePtr() const {return dst_false;}
+  Value* getCondPtr() const {return cond;}
 
   void replaceTargetWith(const BasicBlock *F, const BasicBlock *T) override;
   std::vector<Value*> operands() const override;

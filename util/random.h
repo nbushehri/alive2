@@ -8,5 +8,9 @@
 namespace util {
 
 std::string get_random_str(unsigned num_chars);
+uint32_t get_random_int32();
+uint64_t get_random_int64();
+float get_random_float();
+double get_random_double();
 
 }
